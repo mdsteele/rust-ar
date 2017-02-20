@@ -1,2 +1,2 @@
 # rust-ar
-Rust library for encoding/decoding Unix archive (.ar) files
+Rust library for encoding/decoding Unix archive (.a) files
