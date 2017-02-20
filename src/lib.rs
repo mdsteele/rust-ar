@@ -17,7 +17,8 @@ use std::io::{self, Error, ErrorKind, Read, Result, Write};
 use std::path::Path;
 use std::str;
 
-#[cfg(unix)] use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 // ========================================================================= //
 
@@ -120,8 +121,13 @@ impl Header {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        write!(writer, "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-               self.identifier, self.mtime, self.uid, self.gid, self.mode,
+        write!(writer,
+               "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+               self.identifier,
+               self.mtime,
+               self.uid,
+               self.gid,
+               self.mode,
                self.size)
     }
 }
@@ -146,7 +152,7 @@ pub struct Archive<R: Read> {
     finished: bool,
 }
 
-impl <R: Read> Archive<R> {
+impl<R: Read> Archive<R> {
     /// Create a new archive reader with the underlying reader object as the
     /// source of all data read.
     pub fn new(reader: R) -> Archive<R> {
@@ -264,11 +270,14 @@ pub struct Builder<W: Write> {
     started: bool,
 }
 
-impl <W: Write> Builder<W> {
+impl<W: Write> Builder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
     pub fn new(writer: W) -> Builder<W> {
-        Builder { writer: writer, started: false }
+        Builder {
+            writer: writer,
+            started: false,
+        }
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
@@ -285,7 +294,9 @@ impl <W: Write> Builder<W> {
         let actual_size = try!(io::copy(&mut data, &mut self.writer));
         if actual_size != header.size() {
             let msg = format!("Wrong file size (header.size() = {}, actual \
-                               size was {})", header.size(), actual_size);
+                               size was {})",
+                              header.size(),
+                              actual_size);
             return Err(Error::new(ErrorKind::InvalidData, msg));
         }
         if actual_size % 2 != 0 {
