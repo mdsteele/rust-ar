@@ -98,7 +98,7 @@ impl Header {
             let msg = "Unexpected EOF in the middle of archive entry header";
             return Err(Error::new(ErrorKind::UnexpectedEof, msg));
         }
-        let identifier = match str::from_utf8(&buffer[0..16]) {
+        let mut identifier = match str::from_utf8(&buffer[0..16]) {
             Ok(string) => string.trim_right().to_string(),
             Err(_) => {
                 let msg = "Non-UTF8 bytes in entry identifier";
@@ -109,7 +109,35 @@ impl Header {
         let uid = try!(parse_number(&buffer[28..34], 10)) as u32;
         let gid = try!(parse_number(&buffer[34..40], 10)) as u32;
         let mode = try!(parse_number(&buffer[40..48], 8)) as u32;
-        let size = try!(parse_number(&buffer[48..58], 10));
+        let mut size = try!(parse_number(&buffer[48..58], 10));
+        if identifier.starts_with("#1/") {
+            let padded_length = try!(parse_number(&buffer[3..16], 10));
+            if size < padded_length {
+                let msg = format!("Entry size ({}) smaller than extended \
+                                   entry identifier length ({})",
+                                  size,
+                                  padded_length);
+                return Err(Error::new(ErrorKind::InvalidData, msg));
+            }
+            size -= padded_length;
+            let mut id_buffer = vec![0; padded_length as usize];
+            let bytes_read = try!(reader.read(&mut id_buffer));
+            if bytes_read < id_buffer.len() {
+                let msg = "Unexpected EOF in the middle of extended entry \
+                           identifier";
+                return Err(Error::new(ErrorKind::UnexpectedEof, msg));
+            }
+            while id_buffer.last() == Some(&0) {
+                id_buffer.pop();
+            }
+            identifier = match str::from_utf8(&id_buffer) {
+                Ok(string) => string.to_string(),
+                Err(_) => {
+                    let msg = "Non-UTF8 bytes in extended entry identifier";
+                    return Err(Error::new(ErrorKind::InvalidData, msg));
+                }
+            };
+        }
         Ok(Some(Header {
             identifier: identifier,
             mtime: mtime,
@@ -444,6 +472,48 @@ mod tests {
             let entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(entry.header().identifier(), "baz.txt");
             assert_eq!(entry.header().size(), 4);
+        }
+    }
+
+    #[test]
+    fn read_archive_with_long_filenames() {
+        let input = "\
+        !<arch>\n\
+        #1/32           1487552916  501   20    100644  39        `\n\
+        this_is_a_very_long_filename.txtfoobar\n\n\
+        #1/44           0           0     0     0       48        `\n\
+        and_this_is_another_very_long_filename.txt\x00\x00baz\n";
+        let mut archive = Archive::new(input.as_bytes());
+        {
+            // Parse the first entry and check the header values.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(),
+                       "this_is_a_very_long_filename.txt");
+            assert_eq!(entry.header().mtime(), 1487552916);
+            assert_eq!(entry.header().uid(), 501);
+            assert_eq!(entry.header().gid(), 20);
+            assert_eq!(entry.header().mode(), 0o100644);
+            // We should get the size of the actual file, not including the
+            // filename, even though this is not the value that's in the size
+            // field in the input.
+            assert_eq!(entry.header().size(), 7);
+            // Read in the entry data; we should get only the payload and not
+            // the filename.
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        {
+            // Parse the second entry and check a couple header values.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(),
+                       "and_this_is_another_very_long_filename.txt");
+            assert_eq!(entry.header().size(), 4);
+            // Read in the entry data; we should get only the payload and not
+            // the filename or the padding bytes.
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
     }
 }
