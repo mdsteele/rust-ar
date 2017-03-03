@@ -121,14 +121,29 @@ impl Header {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        write!(writer,
-               "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-               self.identifier,
-               self.mtime,
-               self.uid,
-               self.gid,
-               self.mode,
-               self.size)
+        if self.identifier.len() > 16 {
+            let padding_length = (4 - self.identifier.len() % 4) % 4;
+            let padded_length = self.identifier.len() + padding_length;
+            try!(write!(writer,
+                        "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n{}",
+                        padded_length,
+                        self.mtime,
+                        self.uid,
+                        self.gid,
+                        self.mode,
+                        self.size + padded_length as u64,
+                        self.identifier));
+            writer.write_all(&vec![0; padding_length])
+        } else {
+            write!(writer,
+                   "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                   self.identifier,
+                   self.mtime,
+                   self.uid,
+                   self.gid,
+                   self.mode,
+                   self.size)
+        }
     }
 }
 
@@ -356,6 +371,32 @@ mod tests {
         foobar\n\n\
         baz.txt         0           0     0     0       4         `\n\
         baz\n";
+        assert_eq!(str::from_utf8(&actual).unwrap(), expected);
+    }
+
+    #[test]
+    fn build_archive_with_long_filenames() {
+        let mut builder = Builder::new(Vec::new());
+        let header1 = Header {
+            identifier: "this_is_a_very_long_filename.txt".to_string(),
+            mtime: 1487552916,
+            uid: 501,
+            gid: 20,
+            mode: 0o100644,
+            size: 7,
+        };
+        builder.append(&header1, "foobar\n".as_bytes()).unwrap();
+        let header2 = Header::new("and_this_is_another_very_long_filename.txt"
+                                      .to_string(),
+                                  4);
+        builder.append(&header2, "baz\n".as_bytes()).unwrap();
+        let actual = builder.into_inner().unwrap();
+        let expected = "\
+        !<arch>\n\
+        #1/32           1487552916  501   20    100644  39        `\n\
+        this_is_a_very_long_filename.txtfoobar\n\n\
+        #1/44           0           0     0     0       48        `\n\
+        and_this_is_another_very_long_filename.txt\x00\x00baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
 
