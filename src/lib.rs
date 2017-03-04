@@ -149,7 +149,7 @@ impl Header {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        if self.identifier.len() > 16 {
+        if self.identifier.len() > 16 || self.identifier.contains(' ') {
             let padding_length = (4 - self.identifier.len() % 4) % 4;
             let padded_length = self.identifier.len() + padding_length;
             try!(write!(writer,
@@ -429,6 +429,19 @@ mod tests {
     }
 
     #[test]
+    fn build_archive_with_space_in_filename() {
+        let mut builder = Builder::new(Vec::new());
+        let header = Header::new("foo bar".to_string(), 4);
+        builder.append(&header, "baz\n".as_bytes()).unwrap();
+        let actual = builder.into_inner().unwrap();
+        let expected = "\
+        !<arch>\n\
+        #1/8            0           0     0     0       12        `\n\
+        foo bar\x00baz\n";
+        assert_eq!(str::from_utf8(&actual).unwrap(), expected);
+    }
+
+    #[test]
     fn read_archive_with_three_files() {
         let input = "\
         !<arch>\n\
@@ -515,6 +528,21 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
+    }
+
+    #[test]
+    fn read_archive_with_space_in_filename() {
+        let input = "\
+        !<arch>\n\
+        #1/8            0           0     0     0       12        `\n\
+        foo bar\x00baz\n";
+        let mut archive = Archive::new(input.as_bytes());
+        let mut entry = archive.next_entry().unwrap().unwrap();
+        assert_eq!(entry.header().identifier(), "foo bar");
+        assert_eq!(entry.header().size(), 4);
+        let mut buffer = Vec::new();
+        entry.read_to_end(&mut buffer).unwrap();
+        assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
     }
 }
 
