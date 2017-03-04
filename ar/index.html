@@ -47,7 +47,7 @@
                    <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                        [<span class='inner'>&#x2212;</span>]
                    </a>
-               </span><a class='srclink' href='../src/ar/lib.rs.html#1-408' title='goto source code'>[src]</a></span></h1>
+               </span><a class='srclink' href='../src/ar/lib.rs.html#1-600' title='goto source code'>[src]</a></span></h1>
 <div class='docblock'><p>A library for encoding/decoding Unix archive files.</p>
 
 <p>This library provides utilities necessary to manage <a href="https://en.wikipedia.org/wiki/Ar_(Unix)">Unix archive
@@ -58,6 +58,57 @@ a full archive entry into memory.</p>
 
 <p>The API of this crate is meant to be similar to that of the
 <a href="https://crates.io/crates/tar"><code>tar</code></a> crate.</p>
+
+<h1 id='format-variants' class='section-header'><a href='#format-variants'>Format variants</a></h1>
+<p>Unix archive files come in several variants, of which three are the most
+common:</p>
+
+<ul>
+<li>The <em>common variant</em>, used for Debian package (<code>.deb</code>) files among other
+things, which only supports filenames up to 16 characters.</li>
+<li>The <em>BSD variant</em>, used by the <code>ar</code> utility on BSD systems (including Mac
+OS X), which is backwards-compatible with the common variant, but extends
+it to support longer filenames and filenames containing spaces.</li>
+<li>The <em>GNU variant</em>, used by the <code>ar</code> utility on GNU and many other systems
+(including Windows), which is similar to the common format, but which
+stores filenames in a slightly different, incompatible way, and has its
+own strategy for supporting long filenames.</li>
+</ul>
+
+<p>Currently, this crate supports reading and writing the BSD/common variant,
+but does not support the GNU variant at all.</p>
+
+<h1 id='example-usage' class='section-header'><a href='#example-usage'>Example usage</a></h1>
+<p>Writing an archive:</p>
+
+<pre class='rust rust-example-rendered'>
+<span class='kw'>use</span> <span class='ident'>ar</span>::<span class='ident'>Builder</span>;
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>fs</span>::<span class='ident'>File</span>;
+<span class='comment'>// Create a new archive that will be written to foo.a:</span>
+<span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>builder</span> <span class='op'>=</span> <span class='ident'>Builder</span>::<span class='ident'>new</span>(<span class='ident'>File</span>::<span class='ident'>create</span>(<span class='string'>&quot;foo.a&quot;</span>).<span class='ident'>unwrap</span>());
+<span class='comment'>// Add foo/bar.txt to the archive, under the name &quot;bar.txt&quot;:</span>
+<span class='ident'>builder</span>.<span class='ident'>append_path</span>(<span class='string'>&quot;foo/bar.txt&quot;</span>).<span class='ident'>unwrap</span>();
+<span class='comment'>// Add foo/baz.txt to the archive, under the name &quot;hello.txt&quot;:</span>
+<span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>file</span> <span class='op'>=</span> <span class='ident'>File</span>::<span class='ident'>open</span>(<span class='string'>&quot;foo/baz.txt&quot;</span>).<span class='ident'>unwrap</span>();
+<span class='ident'>builder</span>.<span class='ident'>append_file</span>(<span class='string'>&quot;hello.txt&quot;</span>, <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>file</span>).<span class='ident'>unwrap</span>();</pre>
+
+<p>Reading an archive:</p>
+
+<pre class='rust rust-example-rendered'>
+<span class='kw'>use</span> <span class='ident'>ar</span>::<span class='ident'>Archive</span>;
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>fs</span>::<span class='ident'>File</span>;
+<span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>io</span>;
+<span class='comment'>// Read an archive from the file foo.a:</span>
+<span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>archive</span> <span class='op'>=</span> <span class='ident'>Archive</span>::<span class='ident'>new</span>(<span class='ident'>File</span>::<span class='ident'>open</span>(<span class='string'>&quot;foo.a&quot;</span>).<span class='ident'>unwrap</span>());
+<span class='comment'>// Iterate over all entries in the archive:</span>
+<span class='kw'>while</span> <span class='kw'>let</span> <span class='prelude-val'>Some</span>(<span class='ident'>entry_result</span>) <span class='op'>=</span> <span class='ident'>archive</span>.<span class='ident'>next_entry</span>() {
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>entry</span> <span class='op'>=</span> <span class='ident'>entry_result</span>.<span class='ident'>unwrap</span>();
+    <span class='comment'>// Create a new file with the same name as the archive entry:</span>
+    <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>file</span> <span class='op'>=</span> <span class='ident'>File</span>::<span class='ident'>create</span>(<span class='ident'>entry</span>.<span class='ident'>header</span>().<span class='ident'>identifier</span>()).<span class='ident'>unwrap</span>();
+    <span class='comment'>// The Entry object also acts as an io::Read, so we can easily copy the</span>
+    <span class='comment'>// contents of the archive entry into the file:</span>
+    <span class='ident'>io</span>::<span class='ident'>copy</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>entry</span>, <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>file</span>).<span class='ident'>unwrap</span>();
+}</pre>
 </div><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
 <table>
                        <tr class=' module-item'>
