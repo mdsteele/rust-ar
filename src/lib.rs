@@ -141,20 +141,40 @@ impl Header {
     /// Returns the file identifier.
     pub fn identifier(&self) -> &str { &self.identifier }
 
+    /// Sets the file identifier.
+    pub fn set_identifier(&mut self, identifier: String) {
+        self.identifier = identifier;
+    }
+
     /// Returns the last modification time in Unix time format.
     pub fn mtime(&self) -> u64 { self.mtime }
+
+    /// Sets the last modification time in Unix time format.
+    pub fn set_mtime(&mut self, mtime: u64) { self.mtime = mtime; }
 
     /// Returns the value of the owner's user ID field.
     pub fn uid(&self) -> u32 { self.uid }
 
+    /// Sets the value of the owner's user ID field.
+    pub fn set_uid(&mut self, uid: u32) { self.uid = uid; }
+
     /// Returns the value of the group's user ID field.
     pub fn gid(&self) -> u32 { self.gid }
+
+    /// Returns the value of the group's user ID field.
+    pub fn set_gid(&mut self, gid: u32) { self.gid = gid; }
 
     /// Returns the mode bits for this file.
     pub fn mode(&self) -> u32 { self.mode }
 
+    /// Sets the mode bits for this file.
+    pub fn set_mode(&mut self, mode: u32) { self.mode = mode; }
+
     /// Returns the length of the file, in bytes.
     pub fn size(&self) -> u64 { self.size }
+
+    /// Sets the length of the file, in bytes.
+    pub fn set_size(&mut self, size: u64) { self.size = size; }
 
     /// Parses the next header.  Returns `Ok(None)` if we are at EOF.
     fn read<R: Read>(reader: &mut R, variant: &mut Variant,
@@ -496,14 +516,11 @@ mod tests {
     #[test]
     fn build_common_archive() {
         let mut builder = Builder::new(Vec::new());
-        let header1 = Header {
-            identifier: "foo.txt".to_string(),
-            mtime: 1487552916,
-            uid: 501,
-            gid: 20,
-            mode: 0o100644,
-            size: 7,
-        };
+        let mut header1 = Header::new("foo.txt".to_string(), 7);
+        header1.set_mtime(1487552916);
+        header1.set_uid(501);
+        header1.set_gid(20);
+        header1.set_mode(0o100644);
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
         let header2 = Header::new("baz.txt".to_string(), 4);
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
@@ -520,14 +537,13 @@ mod tests {
     #[test]
     fn build_bsd_archive_with_long_filenames() {
         let mut builder = Builder::new(Vec::new());
-        let header1 = Header {
-            identifier: "this_is_a_very_long_filename.txt".to_string(),
-            mtime: 1487552916,
-            uid: 501,
-            gid: 20,
-            mode: 0o100644,
-            size: 7,
-        };
+        let mut header1 = Header::new("short".to_string(), 1);
+        header1.set_identifier("this_is_a_very_long_filename.txt".to_string());
+        header1.set_mtime(1487552916);
+        header1.set_uid(501);
+        header1.set_gid(20);
+        header1.set_mode(0o100644);
+        header1.set_size(7);
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
         let header2 = Header::new("and_this_is_another_very_long_filename.txt"
                                       .to_string(),
