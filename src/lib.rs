@@ -177,9 +177,11 @@ impl Header {
     pub fn set_size(&mut self, size: u64) { self.size = size; }
 
     /// Parses the next header.  Returns `Ok(None)` if we are at EOF.
-    fn read<R: Read>(reader: &mut R, variant: &mut Variant,
-                     name_table: &mut Vec<u8>)
-                     -> Result<Option<Header>> {
+    fn read<R>(reader: &mut R, variant: &mut Variant, name_table: &mut Vec<u8>)
+        -> Result<Option<Header>>
+    where
+        R: Read,
+    {
         let mut buffer = [0; 60];
         let bytes_read = try!(reader.read(&mut buffer));
         if bytes_read == 0 {
@@ -195,7 +197,7 @@ impl Header {
                 return Err(Error::new(ErrorKind::InvalidData, msg));
             }
         };
-        let mut size = try!(parse_number(&buffer[48..58], 10));
+        let mut size = try!(parse_number("file size", &buffer[48..58], 10));
         if *variant != Variant::BSD && identifier.starts_with('/') {
             *variant = Variant::GNU;
             if identifier == GNU_NAME_TABLE_ID {
@@ -203,7 +205,10 @@ impl Header {
                 try!(reader.read_exact(name_table as &mut [u8]));
                 return Ok(Some(Header::new(identifier, size)));
             }
-            let start = try!(parse_number(&buffer[1..16], 10)) as usize;
+            let start =
+                try!(
+                    parse_number("GNU filename index", &buffer[1..16], 10)
+                ) as usize;
             let end =
                 match name_table[start..].iter().position(|&ch| ch == b'/') {
                     Some(len) => start + len,
@@ -220,18 +225,21 @@ impl Header {
             *variant = Variant::GNU;
             identifier.pop();
         }
-        let mtime = try!(parse_number(&buffer[16..28], 10));
-        let uid = try!(parse_number(&buffer[28..34], 10)) as u32;
-        let gid = try!(parse_number(&buffer[34..40], 10)) as u32;
-        let mode = try!(parse_number(&buffer[40..48], 8)) as u32;
+        let mtime = try!(parse_number("timestamp", &buffer[16..28], 10));
+        let uid = try!(parse_number("owner ID", &buffer[28..34], 10)) as u32;
+        let gid = try!(parse_number("group ID", &buffer[34..40], 10)) as u32;
+        let mode = try!(parse_number("file mode", &buffer[40..48], 8)) as u32;
         if *variant != Variant::GNU && identifier.starts_with("#1/") {
             *variant = Variant::BSD;
-            let padded_length = try!(parse_number(&buffer[3..16], 10));
+            let padded_length =
+                try!(parse_number("BSD filename length", &buffer[3..16], 10));
             if size < padded_length {
-                let msg = format!("Entry size ({}) smaller than extended \
+                let msg = format!(
+                    "Entry size ({}) smaller than extended \
                                    entry identifier length ({})",
-                                  size,
-                                  padded_length);
+                    size,
+                    padded_length
+                );
                 return Err(Error::new(ErrorKind::InvalidData, msg));
             }
             size -= padded_length;
@@ -267,36 +275,44 @@ impl Header {
         if self.identifier.len() > 16 || self.identifier.contains(' ') {
             let padding_length = (4 - self.identifier.len() % 4) % 4;
             let padded_length = self.identifier.len() + padding_length;
-            try!(write!(writer,
-                        "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n{}",
-                        padded_length,
-                        self.mtime,
-                        self.uid,
-                        self.gid,
-                        self.mode,
-                        self.size + padded_length as u64,
-                        self.identifier));
+            try!(write!(
+                writer,
+                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n{}",
+                padded_length,
+                self.mtime,
+                self.uid,
+                self.gid,
+                self.mode,
+                self.size + padded_length as u64,
+                self.identifier
+            ));
             writer.write_all(&vec![0; padding_length])
         } else {
-            write!(writer,
-                   "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-                   self.identifier,
-                   self.mtime,
-                   self.uid,
-                   self.gid,
-                   self.mode,
-                   self.size)
+            write!(
+                writer,
+                "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                self.identifier,
+                self.mtime,
+                self.uid,
+                self.gid,
+                self.mode,
+                self.size
+            )
         }
     }
 }
 
-fn parse_number(bytes: &[u8], radix: u32) -> Result<u64> {
+fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         if let Ok(value) = u64::from_str_radix(string.trim_right(), radix) {
             return Ok(value);
         }
     }
-    let msg = "Invalid numeric field in entry header";
+    let msg = format!(
+        "Invalid {} field in entry header ({:?})",
+        field_name,
+        String::from_utf8_lossy(bytes)
+    );
     Err(Error::new(ErrorKind::InvalidData, msg))
 }
 
@@ -376,16 +392,19 @@ impl<R: Read> Archive<R> {
                 }
                 self.padding = false;
             }
-            match Header::read(&mut self.reader,
-                               &mut self.variant,
-                               &mut self.name_table) {
+            match Header::read(
+                &mut self.reader,
+                &mut self.variant,
+                &mut self.name_table,
+            ) {
                 Ok(Some(header)) => {
                     let size = header.size();
                     if size % 2 != 0 {
                         self.padding = true;
                     }
                     if self.variant == Variant::GNU &&
-                       header.identifier() == GNU_NAME_TABLE_ID {
+                        header.identifier() == GNU_NAME_TABLE_ID
+                    {
                         continue;
                     }
                     return Some(Ok(Entry {
@@ -463,7 +482,7 @@ impl<W: Write> Builder<W> {
 
     /// Adds a new entry to this archive.
     pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-                           -> Result<()> {
+        -> Result<()> {
         if !self.started {
             try!(self.writer.write_all(GLOBAL_HEADER));
             self.started = true;
@@ -471,10 +490,12 @@ impl<W: Write> Builder<W> {
         try!(header.write(&mut self.writer));
         let actual_size = try!(io::copy(&mut data, &mut self.writer));
         if actual_size != header.size() {
-            let msg = format!("Wrong file size (header.size() = {}, actual \
+            let msg = format!(
+                "Wrong file size (header.size() = {}, actual \
                                size was {})",
-                              header.size(),
-                              actual_size);
+                header.size(),
+                actual_size
+            );
             return Err(Error::new(ErrorKind::InvalidData, msg));
         }
         if actual_size % 2 != 0 {
@@ -545,9 +566,10 @@ mod tests {
         header1.set_mode(0o100644);
         header1.set_size(7);
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
-        let header2 = Header::new("and_this_is_another_very_long_filename.txt"
-                                      .to_string(),
-                                  4);
+        let header2 = Header::new(
+            "and_this_is_another_very_long_filename.txt".to_string(),
+            4,
+        );
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap();
         let expected = "\
@@ -632,8 +654,10 @@ mod tests {
         {
             // Parse the first entry and check the header values.
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(),
-                       "this_is_a_very_long_filename.txt");
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt"
+            );
             assert_eq!(entry.header().mtime(), 1487552916);
             assert_eq!(entry.header().uid(), 501);
             assert_eq!(entry.header().gid(), 20);
@@ -651,8 +675,10 @@ mod tests {
         {
             // Parse the second entry and check a couple header values.
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(),
-                       "and_this_is_another_very_long_filename.txt");
+            assert_eq!(
+                entry.header().identifier(),
+                "and_this_is_another_very_long_filename.txt"
+            );
             assert_eq!(entry.header().size(), 4);
             // Read in the entry data; we should get only the payload and not
             // the filename or the padding bytes.
@@ -724,8 +750,10 @@ mod tests {
         let mut archive = Archive::new(input.as_bytes());
         {
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(),
-                       "this_is_a_very_long_filename.txt");
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt"
+            );
             assert_eq!(entry.header().mtime(), 1487552916);
             assert_eq!(entry.header().uid(), 501);
             assert_eq!(entry.header().gid(), 20);
@@ -737,8 +765,10 @@ mod tests {
         }
         {
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(),
-                       "and_this_is_another_very_long_filename.txt");
+            assert_eq!(
+                entry.header().identifier(),
+                "and_this_is_another_very_long_filename.txt"
+            );
             assert_eq!(entry.header().size(), 4);
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
@@ -763,6 +793,92 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert_eq!(archive.variant(), Variant::GNU);
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid timestamp field in entry header \
+                               (\\\"helloworld  \\\")")]
+    fn read_archive_with_invalid_mtime() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         helloworld  501   20    100644  7         `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid owner ID field in entry header \
+                               (\\\"foo   \\\")")]
+    fn read_archive_with_invalid_uid() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  foo   20    100644  7         `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid group ID field in entry header \
+                               (\\\"bar   \\\")")]
+    fn read_archive_with_invalid_gid() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   bar   100644  7         `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid file mode field in entry header \
+                               (\\\"foobar  \\\")")]
+    fn read_archive_with_invalid_mode() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   20    foobar  7         `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid file size field in entry header \
+                               (\\\"whatever  \\\")")]
+    fn read_archive_with_invalid_size() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   20    100644  whatever  `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid BSD filename length field in entry \
+                               header (\\\"foobar       \\\")")]
+    fn read_bsd_archive_with_invalid_filename_length() {
+        let input = "\
+        !<arch>\n\
+        #1/foobar       1487552916  501   20    100644  39        `\n\
+        this_is_a_very_long_filename.txtfoobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid GNU filename index field in entry \
+                               header (\\\"foobar         \\\")")]
+    fn read_gnu_archive_with_invalid_filename_index() {
+        let input = "\
+        !<arch>\n\
+        //                                              34        `\n\
+        this_is_a_very_long_filename.txt/\n\
+        /foobar         1487552916  501   20    100644  7         `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
     }
 }
 

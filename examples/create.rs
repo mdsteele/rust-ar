@@ -28,14 +28,16 @@ fn main() {
 
     let output_path = env::args().nth(1).unwrap();
     let output_path = Path::new(&output_path);
-    let output_file = File::create(output_path)
-        .expect("failed to open output file");
+    let output_file =
+        File::create(output_path).expect("failed to open output file");
     let mut builder = ar::Builder::new(output_file);
 
     for index in 2..num_args {
         let input_path = env::args().nth(index).unwrap();
         let input_path = Path::new(&input_path);
-        builder.append_path(input_path)
-            .expect(&format!("failed to add {:?} to archive", input_path));
+        builder.append_path(input_path).expect(&format!(
+            "failed to add {:?} to archive",
+            input_path
+        ));
     }
 }
