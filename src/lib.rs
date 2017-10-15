@@ -79,6 +79,7 @@ const GLOBAL_HEADER_LEN: usize = 8;
 const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const GNU_NAME_TABLE_ID: &'static str = "//";
+const GNU_SYMBOL_LOOKUP_TABLE_ID: &'static str = "/";
 
 // ========================================================================= //
 
@@ -200,7 +201,12 @@ impl Header {
         let mut size = try!(parse_number("file size", &buffer[48..58], 10));
         if *variant != Variant::BSD && identifier.starts_with('/') {
             *variant = Variant::GNU;
-            if identifier == GNU_NAME_TABLE_ID {
+            if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID {
+                try!(
+                    io::copy(&mut reader.by_ref().take(size), &mut io::sink())
+                );
+                return Ok(Some(Header::new(identifier, size)));
+            } else if identifier == GNU_NAME_TABLE_ID {
                 *name_table = vec![0; size as usize];
                 try!(reader.read_exact(name_table as &mut [u8]));
                 return Ok(Some(Header::new(identifier, size)));
@@ -403,7 +409,9 @@ impl<R: Read> Archive<R> {
                         self.padding = true;
                     }
                     if self.variant == Variant::GNU &&
-                        header.identifier() == GNU_NAME_TABLE_ID
+                        (header.identifier() == GNU_NAME_TABLE_ID ||
+                             header.identifier() ==
+                                 GNU_SYMBOL_LOOKUP_TABLE_ID)
                     {
                         continue;
                     }
@@ -793,6 +801,28 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert_eq!(archive.variant(), Variant::GNU);
+    }
+    #[test]
+    fn read_gnu_archive_with_symbol_lookup_table() {
+        let input = b"\
+        !<arch>\n\
+        /               0           0     0     0       15        `\n\
+        \x00\x00\x00\x01\x00\x00\x00\xb2foobar\x00\n\
+        //                                              34        `\n\
+        this_is_a_very_long_filename.txt/\n\
+        /0              1487552916  501   20    100644  7         `\n\
+        foobar\n";
+        let mut archive = Archive::new(input as &[u8]);
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt"
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
     }
 
     #[test]
