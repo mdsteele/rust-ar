@@ -79,6 +79,8 @@ use std::os::unix::fs::MetadataExt;
 const GLOBAL_HEADER_LEN: usize = 8;
 const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
+const ENTRY_HEADER_LEN: usize = 60;
+
 const GNU_NAME_TABLE_ID: &'static str = "//";
 const GNU_SYMBOL_LOOKUP_TABLE_ID: &'static str = "/";
 
@@ -330,9 +332,13 @@ pub struct Archive<R: Read> {
     reader: R,
     variant: Variant,
     name_table: Vec<u8>,
-    started: bool,
-    padding: bool,
-    finished: bool,
+    entry_headers: Vec<(Header, u64)>,
+    new_entry_start: u64,
+    next_entry_index: usize,
+    started: bool, // True if we've read past the global header.
+    padding: bool, // True if there's a padding byte before the next entry.
+    scanned: bool, // True if entry_headers is complete.
+    error: bool, // True if we have encountered an error.
 }
 
 impl<R: Read> Archive<R> {
@@ -343,9 +349,13 @@ impl<R: Read> Archive<R> {
             reader: reader,
             variant: Variant::Common,
             name_table: Vec::new(),
+            entry_headers: Vec::new(),
+            new_entry_start: GLOBAL_HEADER_LEN as u64,
+            next_entry_index: 0,
             started: false,
             padding: false,
-            finished: false,
+            scanned: false,
+            error: false,
         }
     }
 
@@ -360,45 +370,60 @@ impl<R: Read> Archive<R> {
     /// Unwrap this archive reader, returning the underlying reader object.
     pub fn into_inner(self) -> Result<R> { Ok(self.reader) }
 
+    fn read_global_header_if_necessary(&mut self) -> Result<()> {
+        if self.started {
+            return Ok(());
+        }
+        let mut buffer = [0; GLOBAL_HEADER_LEN];
+        match self.reader.read_exact(&mut buffer) {
+            Ok(()) => {}
+            Err(error) => {
+                self.error = true;
+                return Err(error);
+            }
+        }
+        if &buffer != GLOBAL_HEADER {
+            self.error = true;
+            let msg = "Not an archive file (invalid global header)";
+            return Err(Error::new(ErrorKind::InvalidData, msg));
+        }
+        self.started = true;
+        Ok(())
+    }
+
     /// Reads the next entry from the archive, or returns None if there are no
     /// more.
     pub fn next_entry(&mut self) -> Option<Result<Entry<R>>> {
         loop {
-            if self.finished {
+            if self.error {
                 return None;
             }
-            if !self.started {
-                let mut buffer = [0; GLOBAL_HEADER_LEN];
-                match self.reader.read_exact(&mut buffer) {
-                    Ok(()) => {}
-                    Err(error) => {
-                        self.finished = true;
-                        return Some(Err(error));
-                    }
-                }
-                if &buffer != GLOBAL_HEADER {
-                    self.finished = true;
-                    let msg = "Not an archive file (invalid global header)";
-                    return Some(Err(Error::new(ErrorKind::InvalidData, msg)));
-                }
-                self.started = true;
+            if self.scanned &&
+                self.next_entry_index == self.entry_headers.len()
+            {
+                return None;
+            }
+            match self.read_global_header_if_necessary() {
+                Ok(()) => {}
+                Err(error) => return Some(Err(error)),
             }
             if self.padding {
                 let mut buffer = [0; 1];
                 match self.reader.read_exact(&mut buffer) {
                     Ok(()) => {}
                     Err(error) => {
-                        self.finished = true;
+                        self.error = true;
                         return Some(Err(error));
                     }
                 }
                 if &buffer != b"\n" {
-                    self.finished = true;
+                    self.error = true;
                     let msg = "Invalid padding byte";
                     return Some(Err(Error::new(ErrorKind::InvalidData, msg)));
                 }
                 self.padding = false;
             }
+            let header_start = self.new_entry_start;
             match Header::read(
                 &mut self.reader,
                 &mut self.variant,
@@ -409,6 +434,12 @@ impl<R: Read> Archive<R> {
                     if size % 2 != 0 {
                         self.padding = true;
                     }
+                    if self.next_entry_index == self.entry_headers.len() {
+                        self.new_entry_start += ENTRY_HEADER_LEN as u64 + size;
+                        if size % 2 != 0 {
+                            self.new_entry_start += 1;
+                        }
+                    }
                     if self.variant == Variant::GNU &&
                         (header.identifier() == GNU_NAME_TABLE_ID ||
                              header.identifier() ==
@@ -416,6 +447,11 @@ impl<R: Read> Archive<R> {
                     {
                         continue;
                     }
+                    if self.next_entry_index == self.entry_headers.len() {
+                        self.entry_headers.push((header, header_start));
+                    }
+                    let header = &self.entry_headers[self.next_entry_index].0;
+                    self.next_entry_index += 1;
                     return Some(Ok(Entry {
                         header: header,
                         reader: self.reader.by_ref(),
@@ -424,15 +460,90 @@ impl<R: Read> Archive<R> {
                     }));
                 }
                 Ok(None) => {
-                    self.finished = true;
+                    self.scanned = true;
                     return None;
                 }
                 Err(error) => {
-                    self.finished = true;
+                    self.error = true;
                     return Some(Err(error));
                 }
             }
         }
+    }
+}
+
+impl<R: Read + Seek> Archive<R> {
+    fn scan_if_necessary(&mut self) -> io::Result<()> {
+        if self.scanned {
+            return Ok(());
+        }
+        try!(self.read_global_header_if_necessary());
+        loop {
+            let header_start = self.new_entry_start;
+            try!(self.reader.seek(SeekFrom::Start(header_start)));
+            if let Some(header) = try!(Header::read(
+                &mut self.reader,
+                &mut self.variant,
+                &mut self.name_table,
+            ))
+            {
+                let size = header.size();
+                self.new_entry_start += ENTRY_HEADER_LEN as u64 + size;
+                if size % 2 != 0 {
+                    self.new_entry_start += 1;
+                }
+                if self.variant == Variant::GNU &&
+                    (header.identifier() == GNU_NAME_TABLE_ID ||
+                         header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID)
+                {
+                    continue;
+                }
+                self.entry_headers.push((header, header_start));
+            } else {
+                break;
+            }
+        }
+        // Resume our previous position in the file.
+        if self.next_entry_index < self.entry_headers.len() {
+            let offset = self.entry_headers[self.next_entry_index].1;
+            try!(self.reader.seek(SeekFrom::Start(offset)));
+        }
+        self.scanned = true;
+        Ok(())
+    }
+
+    /// Scans the archive and returns the total number of entries in the
+    /// archive (not counting special entries, such as the GNU archive name
+    /// table or symbol table, that are not returned by `next_entry()`).
+    pub fn count_entries(&mut self) -> io::Result<usize> {
+        try!(self.scan_if_necessary());
+        Ok(self.entry_headers.len())
+    }
+
+    /// Scans the archive and jumps to the entry at the given index.  Returns
+    /// an error if the index is not less than the result of `count_entries()`.
+    pub fn jump_to_entry(&mut self, index: usize) -> io::Result<Entry<R>> {
+        try!(self.scan_if_necessary());
+        if index >= self.entry_headers.len() {
+            let msg = "Entry index out of bounds";
+            return Err(Error::new(ErrorKind::InvalidInput, msg));
+        }
+        if index != self.next_entry_index {
+            let offset = self.entry_headers[index].1 + ENTRY_HEADER_LEN as u64;
+            try!(self.reader.seek(SeekFrom::Start(offset)));
+        }
+        let header = &self.entry_headers[index].0;
+        let size = header.size();
+        if size % 2 != 0 {
+            self.padding = true;
+        }
+        self.next_entry_index = index + 1;
+        Ok(Entry {
+            header: header,
+            reader: self.reader.by_ref(),
+            length: size,
+            position: 0,
+        })
     }
 }
 
@@ -444,7 +555,7 @@ impl<R: Read> Archive<R> {
 /// data from this archive entry.  If the underlying reader supports the `Seek`
 /// trait, then the `Entry` object supports `Seek` as well.
 pub struct Entry<'a, R: 'a + Read> {
-    header: Header,
+    header: &'a Header,
     reader: &'a mut R,
     length: u64,
     position: u64,
@@ -452,7 +563,7 @@ pub struct Entry<'a, R: 'a + Read> {
 
 impl<'a, R: 'a + Read> Entry<'a, R> {
     /// Returns the header for this archive entry.
-    pub fn header(&self) -> &Header { &self.header }
+    pub fn header(&self) -> &Header { self.header }
 }
 
 impl<'a, R: 'a + Read> Read for Entry<'a, R> {
@@ -850,6 +961,7 @@ mod tests {
         }
         assert_eq!(archive.variant(), Variant::GNU);
     }
+
     #[test]
     fn read_gnu_archive_with_symbol_lookup_table() {
         let input = b"\
@@ -1027,6 +1139,96 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input.as_bytes()));
         let mut entry = archive.next_entry().unwrap().unwrap();
         entry.seek(SeekFrom::Start(47)).unwrap();
+    }
+
+    #[test]
+    fn count_entries_in_gnu_archive() {
+        let input = b"\
+        !<arch>\n\
+        /               0           0     0     0       15        `\n\
+        \x00\x00\x00\x01\x00\x00\x00\xb2foobar\x00\n\
+        //                                              34        `\n\
+        this_is_a_very_long_filename.txt/\n\
+        /0              1487552916  501   20    100644  7         `\n\
+        foobar\n\n\
+        baz.txt/        1487552349  42    12345 100664  4         `\n\
+        baz\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        assert_eq!(archive.count_entries().unwrap(), 2);
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt"
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        assert_eq!(archive.count_entries().unwrap(), 2);
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "baz.txt");
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
+        }
+        assert_eq!(archive.count_entries().unwrap(), 2);
+    }
+
+    #[test]
+    fn jump_to_entry_in_gnu_archive() {
+        let input = b"\
+        !<arch>\n\
+        //                                              34        `\n\
+        this_is_a_very_long_filename.txt/\n\
+        hello.txt/      1487552316  42    12345 100644  14        `\n\
+        Hello, world!\n\
+        /0              1487552916  501   20    100644  7         `\n\
+        foobar\n\n\
+        baz.txt/        1487552349  42    12345 100664  4         `\n\
+        baz\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        {
+            // Jump to the second entry and check its contents.
+            let mut entry = archive.jump_to_entry(1).unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt"
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        {
+            // Read the next entry, which should be the third one now.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "baz.txt");
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
+        }
+        // We should be at the end of the archive now.
+        assert!(archive.next_entry().is_none());
+        {
+            // Jump back to the first entry and check its contents.
+            let mut entry = archive.jump_to_entry(0).unwrap();
+            assert_eq!(entry.header().identifier(), "hello.txt");
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "Hello, world!\n".as_bytes());
+        }
+        {
+            // Read the next entry, which should be the second one again.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt"
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
     }
 }
 
