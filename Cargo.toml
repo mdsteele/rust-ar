@@ -7,3 +7,7 @@ repository = "https://github.com/mdsteele/rust-ar"
 documentation = "http://mdsteele.github.io/rust-ar/"
 keywords = ["ar", "archive", "deb"]
 license = "MIT"
+readme = "README.md"
+
+[dependencies]
+byteorder = "1"

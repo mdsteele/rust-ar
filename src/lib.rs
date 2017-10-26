@@ -64,10 +64,14 @@
 
 #![warn(missing_docs)]
 
+extern crate byteorder;
+
+use byteorder::{BigEndian, ReadBytesExt};
 use std::cmp;
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
-use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Error, ErrorKind, Read, Result, Seek,
+              SeekFrom, Write};
 use std::path::Path;
 use std::str;
 
@@ -335,6 +339,8 @@ pub struct Archive<R: Read> {
     entry_headers: Vec<(Header, u64)>,
     new_entry_start: u64,
     next_entry_index: usize,
+    symbol_table_header: Option<(Header, u64)>,
+    symbol_table: Option<Vec<(String, u64)>>,
     started: bool, // True if we've read past the global header.
     padding: bool, // True if there's a padding byte before the next entry.
     scanned: bool, // True if entry_headers is complete.
@@ -352,6 +358,8 @@ impl<R: Read> Archive<R> {
             entry_headers: Vec::new(),
             new_entry_start: GLOBAL_HEADER_LEN as u64,
             next_entry_index: 0,
+            symbol_table_header: None,
+            symbol_table: None,
             started: false,
             padding: false,
             scanned: false,
@@ -440,12 +448,15 @@ impl<R: Read> Archive<R> {
                             self.new_entry_start += 1;
                         }
                     }
-                    if self.variant == Variant::GNU &&
-                        (header.identifier() == GNU_NAME_TABLE_ID ||
-                             header.identifier() ==
-                                 GNU_SYMBOL_LOOKUP_TABLE_ID)
-                    {
-                        continue;
+                    if self.variant == Variant::GNU {
+                        if header.identifier() == GNU_NAME_TABLE_ID {
+                            continue;
+                        }
+                        if header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID {
+                            self.symbol_table_header =
+                                Some((header, header_start));
+                            continue;
+                        }
                     }
                     if self.next_entry_index == self.entry_headers.len() {
                         self.entry_headers.push((header, header_start));
@@ -492,11 +503,15 @@ impl<R: Read + Seek> Archive<R> {
                 if size % 2 != 0 {
                     self.new_entry_start += 1;
                 }
-                if self.variant == Variant::GNU &&
-                    (header.identifier() == GNU_NAME_TABLE_ID ||
-                         header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID)
-                {
-                    continue;
+                if self.variant == Variant::GNU {
+                    if header.identifier() == GNU_NAME_TABLE_ID {
+                        continue;
+                    }
+                    if header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID {
+                        self.symbol_table_header =
+                            Some((header, header_start));
+                        continue;
+                    }
                 }
                 self.entry_headers.push((header, header_start));
             } else {
@@ -543,6 +558,58 @@ impl<R: Read + Seek> Archive<R> {
             reader: self.reader.by_ref(),
             length: size,
             position: 0,
+        })
+    }
+
+    fn parse_symbol_table_if_necessary(&mut self) -> io::Result<()> {
+        try!(self.scan_if_necessary());
+        if self.symbol_table.is_some() {
+            return Ok(());
+        }
+        if let Some((ref header, header_start)) = self.symbol_table_header {
+            let offset = header_start + ENTRY_HEADER_LEN as u64;
+            try!(self.reader.seek(SeekFrom::Start(offset)));
+            let mut reader =
+                BufReader::new(self.reader.by_ref().take(header.size()));
+            let num_symbols = try!(reader.read_u32::<BigEndian>()) as usize;
+            let mut symbol_offsets = Vec::<u64>::with_capacity(num_symbols);
+            for _ in 0..num_symbols {
+                let offset = try!(reader.read_u32::<BigEndian>()) as u64;
+                symbol_offsets.push(offset);
+            }
+            let mut symbol_table = Vec::with_capacity(num_symbols);
+            for offset in symbol_offsets.into_iter() {
+                let mut buffer = Vec::<u8>::new();
+                try!(reader.read_until(0, &mut buffer));
+                if buffer.last() == Some(&0) {
+                    buffer.pop();
+                }
+                let symbol = match String::from_utf8(buffer) {
+                    Ok(string) => string,
+                    Err(_) => {
+                        let msg = "Non-UTF8 bytes in symbol";
+                        return Err(Error::new(ErrorKind::InvalidData, msg));
+                    }
+                };
+                symbol_table.push((symbol, offset));
+            }
+            self.symbol_table = Some(symbol_table);
+        }
+        // Resume our previous position in the file.
+        let offset = self.entry_headers[self.next_entry_index].1;
+        try!(self.reader.seek(SeekFrom::Start(offset)));
+        Ok(())
+    }
+
+    /// Scans the archive and returns an iterator over the symbols in the
+    /// archive's symbol table.  If the archive doesn't have a symbol table,
+    /// this method will still succeed, but the iterator won't produce any
+    /// values.
+    pub fn symbols(&mut self) -> io::Result<Symbols<R>> {
+        try!(self.parse_symbol_table_if_necessary());
+        Ok(Symbols {
+            archive: self,
+            index: 0,
         })
     }
 }
@@ -622,6 +689,40 @@ impl<'a, R: 'a + Read> Drop for Entry<'a, R> {
         }
     }
 }
+
+// ========================================================================= //
+
+/// An iterator over the symbols in the symbol table of an archive.
+pub struct Symbols<'a, R: 'a + Read> {
+    archive: &'a Archive<R>,
+    index: usize,
+}
+
+impl<'a, R: Read> Iterator for Symbols<'a, R> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        if let Some(ref table) = self.archive.symbol_table {
+            if self.index < table.len() {
+                let next = table[self.index].0.as_str();
+                self.index += 1;
+                return Some(next);
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = if let Some(ref table) = self.archive.symbol_table {
+            table.len() - self.index
+        } else {
+            0
+        };
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, R: Read> ExactSizeIterator for Symbols<'a, R> {}
 
 // ========================================================================= //
 
@@ -1229,6 +1330,22 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
         }
+    }
+
+    #[test]
+    fn list_symbols_in_gnu_archive() {
+        let input = b"\
+        !<arch>\n\
+        /               0           0     0     0       32        `\n\
+        \x00\x00\x00\x03\x00\x00\x00\x5c\x00\x00\x00\x5c\x00\x00\x00\x5c\
+        foobar\x00baz\x00quux\x00\
+        foo.o/          1487552916  501   20    100644  16        `\n\
+        foobar,baz,quux\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        assert_eq!(archive.symbols().unwrap().len(), 3);
+        assert_eq!(archive.variant(), Variant::GNU);
+        let symbols = archive.symbols().unwrap().collect::<Vec<&str>>();
+        assert_eq!(symbols, vec!["foobar", "baz", "quux"]);
     }
 }
 
