@@ -64,9 +64,10 @@
 
 #![warn(missing_docs)]
 
+use std::cmp;
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
-use std::io::{self, Error, ErrorKind, Read, Result, Write};
+use std::io::{self, Error, ErrorKind, Read, Result, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::str;
 
@@ -417,7 +418,9 @@ impl<R: Read> Archive<R> {
                     }
                     return Some(Ok(Entry {
                         header: header,
-                        reader: self.reader.by_ref().take(size),
+                        reader: self.reader.by_ref(),
+                        length: size,
+                        position: 0,
                     }));
                 }
                 Ok(None) => {
@@ -437,11 +440,14 @@ impl<R: Read> Archive<R> {
 
 /// Representation of an archive entry.
 ///
-/// Entry objects implement the `Read` trait, and can be used to extract the
-/// data from this archive entry.
+/// `Entry` objects implement the `Read` trait, and can be used to extract the
+/// data from this archive entry.  If the underlying reader supports the `Seek`
+/// trait, then the `Entry` object supports `Seek` as well.
 pub struct Entry<'a, R: 'a + Read> {
     header: Header,
-    reader: io::Take<&'a mut R>,
+    reader: &'a mut R,
+    length: u64,
+    position: u64,
 }
 
 impl<'a, R: 'a + Read> Entry<'a, R> {
@@ -451,15 +457,57 @@ impl<'a, R: 'a + Read> Entry<'a, R> {
 
 impl<'a, R: 'a + Read> Read for Entry<'a, R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        self.reader.read(buf)
+        debug_assert!(self.position <= self.length);
+        if self.position == self.length {
+            return Ok(0);
+        }
+        let max_len =
+            cmp::min(self.length - self.position, buf.len() as u64) as usize;
+        let bytes_read = try!(self.reader.read(&mut buf[0..max_len]));
+        self.position += bytes_read as u64;
+        debug_assert!(self.position <= self.length);
+        Ok(bytes_read)
+    }
+}
+
+impl<'a, R: 'a + Read + Seek> Seek for Entry<'a, R> {
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let delta = match pos {
+            SeekFrom::Start(offset) => offset as i64 - self.position as i64,
+            SeekFrom::End(offset) => {
+                self.length as i64 + offset - self.position as i64
+            }
+            SeekFrom::Current(delta) => delta,
+        };
+        let new_position = self.position as i64 + delta;
+        if new_position < 0 {
+            let msg = format!(
+                "Invalid seek to negative position ({})",
+                new_position
+            );
+            return Err(Error::new(ErrorKind::InvalidInput, msg));
+        }
+        let new_position = new_position as u64;
+        if new_position > self.length {
+            let msg = format!(
+                "Invalid seek to position past end of entry ({} vs. {})",
+                new_position,
+                self.length
+            );
+            return Err(Error::new(ErrorKind::InvalidInput, msg));
+        }
+        try!(self.reader.seek(SeekFrom::Current(delta)));
+        self.position = new_position;
+        Ok(self.position)
     }
 }
 
 impl<'a, R: 'a + Read> Drop for Entry<'a, R> {
     fn drop(&mut self) {
-        if self.reader.limit() > 0 {
+        if self.position < self.length {
             // Consume the rest of the data in this entry.
-            let _ = io::copy(&mut self.reader, &mut io::sink());
+            let mut remaining = self.reader.take(self.length - self.position);
+            let _ = io::copy(&mut remaining, &mut io::sink());
         }
     }
 }
@@ -538,9 +586,9 @@ impl<W: Write> Builder<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-    use std::str;
     use super::{Archive, Builder, Header, Variant};
+    use std::io::{Cursor, Read, Seek, SeekFrom};
+    use std::str;
 
     #[test]
     fn build_common_archive() {
@@ -909,6 +957,76 @@ mod tests {
         foobar\n\n";
         let mut archive = Archive::new(input.as_bytes());
         archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
+    fn seek_within_entry() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   20    100644  31        `\n\
+        abcdefghij0123456789ABCDEFGHIJ\n\n\
+        bar.awesome.txt 1487552919  501   20    100644  22        `\n\
+        This file is awesome!\n";
+        let mut archive = Archive::new(Cursor::new(input.as_bytes()));
+        {
+            // Parse the first entry, then seek around the entry, performing
+            // different reads.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            let mut buffer = [0; 5];
+            entry.seek(SeekFrom::Start(10)).unwrap();
+            entry.read_exact(&mut buffer).unwrap();
+            assert_eq!(&buffer, "01234".as_bytes());
+            entry.seek(SeekFrom::Start(5)).unwrap();
+            entry.read_exact(&mut buffer).unwrap();
+            assert_eq!(&buffer, "fghij".as_bytes());
+            entry.seek(SeekFrom::End(-10)).unwrap();
+            entry.read_exact(&mut buffer).unwrap();
+            assert_eq!(&buffer, "BCDEF".as_bytes());
+            entry.seek(SeekFrom::End(-30)).unwrap();
+            entry.read_exact(&mut buffer).unwrap();
+            assert_eq!(&buffer, "bcdef".as_bytes());
+            entry.seek(SeekFrom::Current(10)).unwrap();
+            entry.read_exact(&mut buffer).unwrap();
+            assert_eq!(&buffer, "6789A".as_bytes());
+            entry.seek(SeekFrom::Current(-8)).unwrap();
+            entry.read_exact(&mut buffer).unwrap();
+            assert_eq!(&buffer, "34567".as_bytes());
+            // Dropping the Entry object should automatically consume the rest
+            // of the entry data so that the archive reader is ready to parse
+            // the next entry.
+        }
+        {
+            // Parse the second entry and read in all the entry data.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "This file is awesome!\n".as_bytes());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid seek to negative position (-17)")]
+    fn seek_entry_to_negative_position() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   20    100644  30        `\n\
+        abcdefghij0123456789ABCDEFGHIJ";
+        let mut archive = Archive::new(Cursor::new(input.as_bytes()));
+        let mut entry = archive.next_entry().unwrap().unwrap();
+        entry.seek(SeekFrom::End(-47)).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid seek to position past end of entry \
+                               (47 vs. 30)")]
+    fn seek_entry_beyond_end() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   20    100644  30        `\n\
+        abcdefghij0123456789ABCDEFGHIJ";
+        let mut archive = Archive::new(Cursor::new(input.as_bytes()));
+        let mut entry = archive.next_entry().unwrap().unwrap();
+        entry.seek(SeekFrom::Start(47)).unwrap();
     }
 }
 
