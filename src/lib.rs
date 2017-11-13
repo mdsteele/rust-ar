@@ -596,8 +596,10 @@ impl<R: Read + Seek> Archive<R> {
             self.symbol_table = Some(symbol_table);
         }
         // Resume our previous position in the file.
-        let offset = self.entry_headers[self.next_entry_index].1;
-        try!(self.reader.seek(SeekFrom::Start(offset)));
+        if self.entry_headers.len() > 0 {
+            let offset = self.entry_headers[self.next_entry_index].1;
+            try!(self.reader.seek(SeekFrom::Start(offset)));
+        }
         Ok(())
     }
 
