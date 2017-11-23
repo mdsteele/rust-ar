@@ -48,24 +48,41 @@
                    <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                        [<span class='inner'>&#x2212;</span>]
                    </a>
-               </span><a class='srclink' href='../src/ar/lib.rs.html#306-313' title='goto source code'>[src]</a></span></h1>
+               </span><a class='srclink' href='../src/ar/lib.rs.html#335-348' title='goto source code'>[src]</a></span></h1>
 <pre class='rust struct'>pub struct Archive&lt;R:&nbsp;<a class="trait" href="https://doc.rust-lang.org/nightly/std/io/trait.Read.html" title="trait std::io::Read">Read</a>&gt; { /* fields omitted */ }</pre><div class='docblock'><p>A structure for reading archives.</p>
-</div><h2 id='methods'>Methods</h2><h3 class='impl'><span class='in-band'><code>impl&lt;R:&nbsp;<a class="trait" href="https://doc.rust-lang.org/nightly/std/io/trait.Read.html" title="trait std::io::Read">Read</a>&gt; <a class="struct" href="../ar/struct.Archive.html" title="struct ar::Archive">Archive</a>&lt;R&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#315-407' title='goto source code'>[src]</a></span></h3>
-<div class='impl-items'><h4 id='method.new' class="method"><span id='new.v' class='invisible'><code>fn <a href='#method.new' class='fnname'>new</a>(reader: R) -&gt; <a class="struct" href="../ar/struct.Archive.html" title="struct ar::Archive">Archive</a>&lt;R&gt;</code></span></h4>
+</div>
+                    <h2 id='methods' class='small-section-header'>
+                      Methods<a href='#methods' class='anchor'></a>
+                    </h2>
+                <h3 id='impl' class='impl'><span class='in-band'><code>impl&lt;R:&nbsp;<a class="trait" href="https://doc.rust-lang.org/nightly/std/io/trait.Read.html" title="trait std::io::Read">Read</a>&gt; <a class="struct" href="../ar/struct.Archive.html" title="struct ar::Archive">Archive</a>&lt;R&gt;</code><a href='#impl' class='anchor'></a></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#350-484' title='goto source code'>[src]</a></span></h3>
+<div class='impl-items'><h4 id='method.new' class="method"><span id='new.v' class='invisible'><code>fn <a href='#method.new' class='fnname'>new</a>(reader: R) -&gt; <a class="struct" href="../ar/struct.Archive.html" title="struct ar::Archive">Archive</a>&lt;R&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#353-368' title='goto source code'>[src]</a></span></h4>
 <div class='docblock'><p>Create a new archive reader with the underlying reader object as the
 source of all data read.</p>
-</div><h4 id='method.variant' class="method"><span id='variant.v' class='invisible'><code>fn <a href='#method.variant' class='fnname'>variant</a>(&amp;self) -&gt; <a class="enum" href="../ar/enum.Variant.html" title="enum ar::Variant">Variant</a></code></span></h4>
+</div><h4 id='method.variant' class="method"><span id='variant.v' class='invisible'><code>fn <a href='#method.variant' class='fnname'>variant</a>(&amp;self) -&gt; <a class="enum" href="../ar/enum.Variant.html" title="enum ar::Variant">Variant</a></code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#376' title='goto source code'>[src]</a></span></h4>
 <div class='docblock'><p>Returns which format variant this archive appears to be so far.</p>
 
 <p>Note that this may not be accurate before the archive has been fully
 read (i.e. before the <code>next_entry()</code> method returns <code>None</code>).  In
 particular, a new <code>Archive</code> object that hasn&#39;t yet read any data at all
 will always return <code>Variant::Common</code>.</p>
-</div><h4 id='method.into_inner' class="method"><span id='into_inner.v' class='invisible'><code>fn <a href='#method.into_inner' class='fnname'>into_inner</a>(self) -&gt; <a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;R&gt;</code></span></h4>
+</div><h4 id='method.into_inner' class="method"><span id='into_inner.v' class='invisible'><code>fn <a href='#method.into_inner' class='fnname'>into_inner</a>(self) -&gt; <a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;R&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#379' title='goto source code'>[src]</a></span></h4>
 <div class='docblock'><p>Unwrap this archive reader, returning the underlying reader object.</p>
-</div><h4 id='method.next_entry' class="method"><span id='next_entry.v' class='invisible'><code>fn <a href='#method.next_entry' class='fnname'>next_entry</a>(&amp;mut self) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="struct" href="../ar/struct.Entry.html" title="struct ar::Entry">Entry</a>&lt;R&gt;&gt;&gt;</code></span></h4>
+</div><h4 id='method.next_entry' class="method"><span id='next_entry.v' class='invisible'><code>fn <a href='#method.next_entry' class='fnname'>next_entry</a>(&amp;mut self) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="struct" href="../ar/struct.Entry.html" title="struct ar::Entry">Entry</a>&lt;R&gt;&gt;&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#404-483' title='goto source code'>[src]</a></span></h4>
 <div class='docblock'><p>Reads the next entry from the archive, or returns None if there are no
 more.</p>
+</div></div><h3 id='impl-1' class='impl'><span class='in-band'><code>impl&lt;R:&nbsp;<a class="trait" href="https://doc.rust-lang.org/nightly/std/io/trait.Read.html" title="trait std::io::Read">Read</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/std/io/trait.Seek.html" title="trait std::io::Seek">Seek</a>&gt; <a class="struct" href="../ar/struct.Archive.html" title="struct ar::Archive">Archive</a>&lt;R&gt;</code><a href='#impl-1' class='anchor'></a></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#486-617' title='goto source code'>[src]</a></span></h3>
+<div class='impl-items'><h4 id='method.count_entries' class="method"><span id='count_entries.v' class='invisible'><code>fn <a href='#method.count_entries' class='fnname'>count_entries</a>(&amp;mut self) -&gt; <a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#533-536' title='goto source code'>[src]</a></span></h4>
+<div class='docblock'><p>Scans the archive and returns the total number of entries in the
+archive (not counting special entries, such as the GNU archive name
+table or symbol table, that are not returned by <code>next_entry()</code>).</p>
+</div><h4 id='method.jump_to_entry' class="method"><span id='jump_to_entry.v' class='invisible'><code>fn <a href='#method.jump_to_entry' class='fnname'>jump_to_entry</a>(&amp;mut self, index: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>) -&gt; <a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="struct" href="../ar/struct.Entry.html" title="struct ar::Entry">Entry</a>&lt;R&gt;&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#540-562' title='goto source code'>[src]</a></span></h4>
+<div class='docblock'><p>Scans the archive and jumps to the entry at the given index.  Returns
+an error if the index is not less than the result of <code>count_entries()</code>.</p>
+</div><h4 id='method.symbols' class="method"><span id='symbols.v' class='invisible'><code>fn <a href='#method.symbols' class='fnname'>symbols</a>(&amp;mut self) -&gt; <a class="type" href="https://doc.rust-lang.org/nightly/std/io/error/type.Result.html" title="type std::io::error::Result">Result</a>&lt;<a class="struct" href="../ar/struct.Symbols.html" title="struct ar::Symbols">Symbols</a>&lt;R&gt;&gt;</code></span><span class='out-of-band'><div class='ghost'></div><a class='srclink' href='../src/ar/lib.rs.html#610-616' title='goto source code'>[src]</a></span></h4>
+<div class='docblock'><p>Scans the archive and returns an iterator over the symbols in the
+archive&#39;s symbol table.  If the archive doesn&#39;t have a symbol table,
+this method will still succeed, but the iterator won&#39;t produce any
+values.</p>
 </div></div></section>
     <section id='search' class="content hidden"></section>
 
@@ -123,7 +140,6 @@ more.</p>
         window.rootPath = "../";
         window.currentCrate = "ar";
     </script>
-    <script src="../jquery.js"></script>
     <script src="../main.js"></script>
     <script defer src="../search-index.js"></script>
 </body>
