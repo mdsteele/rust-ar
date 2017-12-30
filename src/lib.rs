@@ -81,6 +81,12 @@ use std::str;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+
 // ========================================================================= //
 
 const GLOBAL_HEADER_LEN: usize = 8;
@@ -765,20 +771,45 @@ impl<W: Write> Builder<W> {
             let msg = "Given path doesn't have a file name";
             Error::new(ErrorKind::InvalidInput, msg)
         }));
-        // TODO: Go direct from OsStr to &[u8] without requiring UTF-8.
-        let name: &str = try!(name.to_str().ok_or_else(|| {
-            let msg = "Given path has a non-UTF8 file name";
-            Error::new(ErrorKind::InvalidData, msg)
-        }));
-        self.append_file(name.as_bytes(), &mut try!(File::open(&path)))
+        let identifier = try!(osstr_to_bytes(name));
+        let mut file = try!(File::open(&path));
+        self.append_file_id(identifier, &mut file)
     }
 
     /// Adds a file to this archive, with the given name as its identifier.
     pub fn append_file(&mut self, name: &[u8], file: &mut File) -> Result<()> {
+        self.append_file_id(name.to_vec(), file)
+    }
+
+    fn append_file_id(&mut self, id: Vec<u8>, file: &mut File) -> Result<()> {
         let metadata = try!(file.metadata());
-        let header = Header::from_metadata(name.to_vec(), &metadata);
+        let header = Header::from_metadata(id, &metadata);
         self.append(&header, file)
     }
+}
+
+#[cfg(unix)]
+fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
+    Ok(string.as_bytes().to_vec())
+}
+
+#[cfg(windows)]
+fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
+    let mut bytes = Vec::<u8>::new();
+    for wide in string.encode_wide() {
+        // Little-endian:
+        bytes.push((wide & 0xff) as u8);
+        bytes.push((wide >> 8) as u8);
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
+    let utf8: &str = try!(string.to_str().ok_or_else(|| {
+        Error::new(ErrorKind::InvalidData, "Non-UTF8 file name")
+    }));
+    Ok(utf8.as_bytes().to_vec())
 }
 
 // ========================================================================= //
