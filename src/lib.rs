@@ -340,7 +340,7 @@ pub struct Archive<R: Read> {
     new_entry_start: u64,
     next_entry_index: usize,
     symbol_table_header: Option<(Header, u64)>,
-    symbol_table: Option<Vec<(String, u64)>>,
+    symbol_table: Option<Vec<(Vec<u8>, u64)>>,
     started: bool, // True if we've read past the global header.
     padding: bool, // True if there's a padding byte before the next entry.
     scanned: bool, // True if entry_headers is complete.
@@ -584,14 +584,8 @@ impl<R: Read + Seek> Archive<R> {
                 if buffer.last() == Some(&0) {
                     buffer.pop();
                 }
-                let symbol = match String::from_utf8(buffer) {
-                    Ok(string) => string,
-                    Err(_) => {
-                        let msg = "Non-UTF8 bytes in symbol";
-                        return Err(Error::new(ErrorKind::InvalidData, msg));
-                    }
-                };
-                symbol_table.push((symbol, offset));
+                buffer.shrink_to_fit();
+                symbol_table.push((buffer, offset));
             }
             self.symbol_table = Some(symbol_table);
         }
@@ -701,12 +695,12 @@ pub struct Symbols<'a, R: 'a + Read> {
 }
 
 impl<'a, R: Read> Iterator for Symbols<'a, R> {
-    type Item = &'a str;
+    type Item = &'a [u8];
 
-    fn next(&mut self) -> Option<&'a str> {
+    fn next(&mut self) -> Option<&'a [u8]> {
         if let Some(ref table) = self.archive.symbol_table {
             if self.index < table.len() {
-                let next = table[self.index].0.as_str();
+                let next = table[self.index].0.as_slice();
                 self.index += 1;
                 return Some(next);
             }
@@ -1346,8 +1340,9 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::GNU);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&str>>();
-        assert_eq!(symbols, vec!["foobar", "baz", "quux"]);
+        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
+        let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
+        assert_eq!(symbols, expected);
     }
 }
 
