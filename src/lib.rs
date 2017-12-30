@@ -40,7 +40,7 @@
 //! builder.append_path("foo/bar.txt").unwrap();
 //! // Add foo/baz.txt to the archive, under the name "hello.txt":
 //! let mut file = File::open("foo/baz.txt").unwrap();
-//! builder.append_file("hello.txt", &mut file).unwrap();
+//! builder.append_file(b"hello.txt", &mut file).unwrap();
 //! ```
 //!
 //! Reading an archive:
@@ -49,13 +49,16 @@
 //! use ar::Archive;
 //! use std::fs::File;
 //! use std::io;
+//! use std::str;
 //! // Read an archive from the file foo.a:
 //! let mut archive = Archive::new(File::open("foo.a").unwrap());
 //! // Iterate over all entries in the archive:
 //! while let Some(entry_result) = archive.next_entry() {
 //!     let mut entry = entry_result.unwrap();
 //!     // Create a new file with the same name as the archive entry:
-//!     let mut file = File::create(entry.header().identifier()).unwrap();
+//!     let mut file = File::create(
+//!         str::from_utf8(entry.header().identifier()).unwrap(),
+//!     ).unwrap();
 //!     // The Entry object also acts as an io::Read, so we can easily copy the
 //!     // contents of the archive entry into the file:
 //!     io::copy(&mut entry, &mut file).unwrap();
@@ -85,8 +88,8 @@ const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const ENTRY_HEADER_LEN: usize = 60;
 
-const GNU_NAME_TABLE_ID: &'static str = "//";
-const GNU_SYMBOL_LOOKUP_TABLE_ID: &'static str = "/";
+const GNU_NAME_TABLE_ID: &[u8] = b"//";
+const GNU_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"/";
 
 // ========================================================================= //
 
@@ -105,7 +108,7 @@ pub enum Variant {
 
 /// Representation of an archive entry header.
 pub struct Header {
-    identifier: String,
+    identifier: Vec<u8>,
     mtime: u64,
     uid: u32,
     gid: u32,
@@ -116,7 +119,7 @@ pub struct Header {
 impl Header {
     /// Creates a header with the given file identifier and size, and all
     /// other fields set to zero.
-    pub fn new(identifier: String, size: u64) -> Header {
+    pub fn new(identifier: Vec<u8>, size: u64) -> Header {
         Header {
             identifier: identifier,
             mtime: 0,
@@ -130,7 +133,7 @@ impl Header {
     /// Creates a header with the given file identifier and all other fields
     /// set from the given filesystem metadata.
     #[cfg(unix)]
-    pub fn from_metadata(identifier: String, meta: &Metadata) -> Header {
+    pub fn from_metadata(identifier: Vec<u8>, meta: &Metadata) -> Header {
         Header {
             identifier: identifier,
             mtime: meta.mtime() as u64,
@@ -142,15 +145,15 @@ impl Header {
     }
 
     #[cfg(not(unix))]
-    pub fn from_metadata(identifier: String, meta: &Metadata) -> Header {
+    pub fn from_metadata(identifier: Vec<u8>, meta: &Metadata) -> Header {
         Header::new(identifier, meta.len())
     }
 
     /// Returns the file identifier.
-    pub fn identifier(&self) -> &str { &self.identifier }
+    pub fn identifier(&self) -> &[u8] { &self.identifier }
 
     /// Sets the file identifier.
-    pub fn set_identifier(&mut self, identifier: String) {
+    pub fn set_identifier(&mut self, identifier: Vec<u8>) {
         self.identifier = identifier;
     }
 
@@ -198,15 +201,12 @@ impl Header {
             let msg = "Unexpected EOF in the middle of archive entry header";
             return Err(Error::new(ErrorKind::UnexpectedEof, msg));
         }
-        let mut identifier = match str::from_utf8(&buffer[0..16]) {
-            Ok(string) => string.trim_right().to_string(),
-            Err(_) => {
-                let msg = "Non-UTF8 bytes in entry identifier";
-                return Err(Error::new(ErrorKind::InvalidData, msg));
-            }
-        };
+        let mut identifier = buffer[0..16].to_vec();
+        while identifier.last() == Some(&b' ') {
+            identifier.pop();
+        }
         let mut size = try!(parse_number("file size", &buffer[48..58], 10));
-        if *variant != Variant::BSD && identifier.starts_with('/') {
+        if *variant != Variant::BSD && identifier.starts_with(b"/") {
             *variant = Variant::GNU;
             if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID {
                 try!(
@@ -227,14 +227,8 @@ impl Header {
                     Some(len) => start + len,
                     None => name_table.len(),
                 };
-            identifier = match str::from_utf8(&name_table[start..end]) {
-                Ok(string) => string.to_string(),
-                Err(_) => {
-                    let msg = "Non-UTF8 bytes in extended entry identifier";
-                    return Err(Error::new(ErrorKind::InvalidData, msg));
-                }
-            };
-        } else if *variant != Variant::BSD && identifier.ends_with('/') {
+            identifier = name_table[start..end].to_vec();
+        } else if *variant != Variant::BSD && identifier.ends_with(b"/") {
             *variant = Variant::GNU;
             identifier.pop();
         }
@@ -242,7 +236,7 @@ impl Header {
         let uid = try!(parse_number("owner ID", &buffer[28..34], 10)) as u32;
         let gid = try!(parse_number("group ID", &buffer[34..40], 10)) as u32;
         let mode = try!(parse_number("file mode", &buffer[40..48], 8)) as u32;
-        if *variant != Variant::GNU && identifier.starts_with("#1/") {
+        if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
             *variant = Variant::BSD;
             let padded_length =
                 try!(parse_number("BSD filename length", &buffer[3..16], 10));
@@ -266,13 +260,7 @@ impl Header {
             while id_buffer.last() == Some(&0) {
                 id_buffer.pop();
             }
-            identifier = match str::from_utf8(&id_buffer) {
-                Ok(string) => string.to_string(),
-                Err(_) => {
-                    let msg = "Non-UTF8 bytes in extended entry identifier";
-                    return Err(Error::new(ErrorKind::InvalidData, msg));
-                }
-            };
+            identifier = id_buffer;
         }
         Ok(Some(Header {
             identifier: identifier,
@@ -285,33 +273,35 @@ impl Header {
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        if self.identifier.len() > 16 || self.identifier.contains(' ') {
+        if self.identifier.len() > 16 || self.identifier.contains(&b' ') {
             let padding_length = (4 - self.identifier.len() % 4) % 4;
             let padded_length = self.identifier.len() + padding_length;
             try!(write!(
                 writer,
-                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n{}",
+                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
                 padded_length,
                 self.mtime,
                 self.uid,
                 self.gid,
                 self.mode,
-                self.size + padded_length as u64,
-                self.identifier
+                self.size + padded_length as u64
             ));
-            writer.write_all(&vec![0; padding_length])
+            try!(writer.write_all(&self.identifier));
+            try!(writer.write_all(&vec![0; padding_length]));
         } else {
-            write!(
+            try!(writer.write_all(&self.identifier));
+            try!(writer.write_all(&vec![b' '; 16 - self.identifier.len()]));
+            try!(write!(
                 writer,
-                "{:<16}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-                self.identifier,
+                "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
                 self.mtime,
                 self.uid,
                 self.gid,
                 self.mode,
                 self.size
-            )
+            ));
         }
+        Ok(())
     }
 }
 
@@ -775,17 +765,18 @@ impl<W: Write> Builder<W> {
             let msg = "Given path doesn't have a file name";
             Error::new(ErrorKind::InvalidInput, msg)
         }));
+        // TODO: Go direct from OsStr to &[u8] without requiring UTF-8.
         let name: &str = try!(name.to_str().ok_or_else(|| {
             let msg = "Given path has a non-UTF8 file name";
             Error::new(ErrorKind::InvalidData, msg)
         }));
-        self.append_file(name, &mut try!(File::open(&path)))
+        self.append_file(name.as_bytes(), &mut try!(File::open(&path)))
     }
 
     /// Adds a file to this archive, with the given name as its identifier.
-    pub fn append_file(&mut self, name: &str, file: &mut File) -> Result<()> {
+    pub fn append_file(&mut self, name: &[u8], file: &mut File) -> Result<()> {
         let metadata = try!(file.metadata());
-        let header = Header::from_metadata(name.to_string(), &metadata);
+        let header = Header::from_metadata(name.to_vec(), &metadata);
         self.append(&header, file)
     }
 }
@@ -801,13 +792,13 @@ mod tests {
     #[test]
     fn build_common_archive() {
         let mut builder = Builder::new(Vec::new());
-        let mut header1 = Header::new("foo.txt".to_string(), 7);
+        let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
         header1.set_gid(20);
         header1.set_mode(0o100644);
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
-        let header2 = Header::new("baz.txt".to_string(), 4);
+        let header2 = Header::new(b"baz.txt".to_vec(), 4);
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap();
         let expected = "\
@@ -822,8 +813,8 @@ mod tests {
     #[test]
     fn build_bsd_archive_with_long_filenames() {
         let mut builder = Builder::new(Vec::new());
-        let mut header1 = Header::new("short".to_string(), 1);
-        header1.set_identifier("this_is_a_very_long_filename.txt".to_string());
+        let mut header1 = Header::new(b"short".to_vec(), 1);
+        header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
         header1.set_uid(501);
         header1.set_gid(20);
@@ -831,7 +822,7 @@ mod tests {
         header1.set_size(7);
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
         let header2 = Header::new(
-            "and_this_is_another_very_long_filename.txt".to_string(),
+            b"and_this_is_another_very_long_filename.txt".to_vec(),
             4,
         );
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
@@ -848,7 +839,7 @@ mod tests {
     #[test]
     fn build_bsd_archive_with_space_in_filename() {
         let mut builder = Builder::new(Vec::new());
-        let header = Header::new("foo bar".to_string(), 4);
+        let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap();
         let expected = "\
@@ -872,7 +863,7 @@ mod tests {
         {
             // Parse the first entry and check the header values.
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "foo.txt");
+            assert_eq!(entry.header().identifier(), b"foo.txt");
             assert_eq!(entry.header().mtime(), 1487552916);
             assert_eq!(entry.header().uid(), 501);
             assert_eq!(entry.header().gid(), 20);
@@ -890,7 +881,7 @@ mod tests {
         {
             // Parse the second entry and check a couple header values.
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "bar.awesome.txt");
+            assert_eq!(entry.header().identifier(), b"bar.awesome.txt");
             assert_eq!(entry.header().size(), 22);
             // Read in all the entry data.
             let mut buffer = Vec::new();
@@ -900,7 +891,7 @@ mod tests {
         {
             // Parse the third entry and check a couple header values.
             let entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "baz.txt");
+            assert_eq!(entry.header().identifier(), b"baz.txt");
             assert_eq!(entry.header().size(), 4);
         }
         assert_eq!(archive.variant(), Variant::Common);
@@ -920,7 +911,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "this_is_a_very_long_filename.txt"
+                "this_is_a_very_long_filename.txt".as_bytes()
             );
             assert_eq!(entry.header().mtime(), 1487552916);
             assert_eq!(entry.header().uid(), 501);
@@ -941,7 +932,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "and_this_is_another_very_long_filename.txt"
+                "and_this_is_another_very_long_filename.txt".as_bytes()
             );
             assert_eq!(entry.header().size(), 4);
             // Read in the entry data; we should get only the payload and not
@@ -962,7 +953,7 @@ mod tests {
         let mut archive = Archive::new(input.as_bytes());
         {
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "foo bar");
+            assert_eq!(entry.header().identifier(), "foo bar".as_bytes());
             assert_eq!(entry.header().size(), 4);
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
@@ -984,17 +975,20 @@ mod tests {
         let mut archive = Archive::new(input.as_bytes());
         {
             let entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "foo.txt");
+            assert_eq!(entry.header().identifier(), "foo.txt".as_bytes());
             assert_eq!(entry.header().size(), 7);
         }
         {
             let entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "bar.awesome.txt");
+            assert_eq!(
+                entry.header().identifier(),
+                "bar.awesome.txt".as_bytes()
+            );
             assert_eq!(entry.header().size(), 22);
         }
         {
             let entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "baz.txt");
+            assert_eq!(entry.header().identifier(), "baz.txt".as_bytes());
             assert_eq!(entry.header().size(), 4);
         }
         assert_eq!(archive.variant(), Variant::GNU);
@@ -1016,7 +1010,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "this_is_a_very_long_filename.txt"
+                "this_is_a_very_long_filename.txt".as_bytes()
             );
             assert_eq!(entry.header().mtime(), 1487552916);
             assert_eq!(entry.header().uid(), 501);
@@ -1031,7 +1025,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "and_this_is_another_very_long_filename.txt"
+                "and_this_is_another_very_long_filename.txt".as_bytes()
             );
             assert_eq!(entry.header().size(), 4);
             let mut buffer = Vec::new();
@@ -1050,7 +1044,7 @@ mod tests {
         let mut archive = Archive::new(input.as_bytes());
         {
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "foo bar");
+            assert_eq!(entry.header().identifier(), "foo bar".as_bytes());
             assert_eq!(entry.header().size(), 4);
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
@@ -1074,7 +1068,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "this_is_a_very_long_filename.txt"
+                "this_is_a_very_long_filename.txt".as_bytes()
             );
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
@@ -1256,7 +1250,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "this_is_a_very_long_filename.txt"
+                "this_is_a_very_long_filename.txt".as_bytes()
             );
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
@@ -1265,7 +1259,7 @@ mod tests {
         assert_eq!(archive.count_entries().unwrap(), 2);
         {
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "baz.txt");
+            assert_eq!(entry.header().identifier(), "baz.txt".as_bytes());
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
@@ -1291,7 +1285,7 @@ mod tests {
             let mut entry = archive.jump_to_entry(1).unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "this_is_a_very_long_filename.txt"
+                "this_is_a_very_long_filename.txt".as_bytes()
             );
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
@@ -1300,7 +1294,7 @@ mod tests {
         {
             // Read the next entry, which should be the third one now.
             let mut entry = archive.next_entry().unwrap().unwrap();
-            assert_eq!(entry.header().identifier(), "baz.txt");
+            assert_eq!(entry.header().identifier(), "baz.txt".as_bytes());
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
@@ -1310,7 +1304,7 @@ mod tests {
         {
             // Jump back to the first entry and check its contents.
             let mut entry = archive.jump_to_entry(0).unwrap();
-            assert_eq!(entry.header().identifier(), "hello.txt");
+            assert_eq!(entry.header().identifier(), "hello.txt".as_bytes());
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "Hello, world!\n".as_bytes());
@@ -1320,7 +1314,7 @@ mod tests {
             let mut entry = archive.next_entry().unwrap().unwrap();
             assert_eq!(
                 entry.header().identifier(),
-                "this_is_a_very_long_filename.txt"
+                "this_is_a_very_long_filename.txt".as_bytes()
             );
             let mut buffer = Vec::new();
             entry.read_to_end(&mut buffer).unwrap();
