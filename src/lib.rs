@@ -193,9 +193,10 @@ impl Header {
     /// Sets the length of the file, in bytes.
     pub fn set_size(&mut self, size: u64) { self.size = size; }
 
-    /// Parses the next header.  Returns `Ok(None)` if we are at EOF.
+    /// Parses and returns the next header and its length.  Returns `Ok(None)`
+    /// if we are at EOF.
     fn read<R>(reader: &mut R, variant: &mut Variant, name_table: &mut Vec<u8>)
-        -> Result<Option<Header>>
+        -> Result<Option<(Header, u64)>>
     where
         R: Read,
     {
@@ -212,17 +213,18 @@ impl Header {
             identifier.pop();
         }
         let mut size = try!(parse_number("file size", &buffer[48..58], 10));
+        let mut header_len = ENTRY_HEADER_LEN as u64;
         if *variant != Variant::BSD && identifier.starts_with(b"/") {
             *variant = Variant::GNU;
             if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID {
                 try!(
                     io::copy(&mut reader.by_ref().take(size), &mut io::sink())
                 );
-                return Ok(Some(Header::new(identifier, size)));
+                return Ok(Some((Header::new(identifier, size), header_len)));
             } else if identifier == GNU_NAME_TABLE_ID {
                 *name_table = vec![0; size as usize];
                 try!(reader.read_exact(name_table as &mut [u8]));
-                return Ok(Some(Header::new(identifier, size)));
+                return Ok(Some((Header::new(identifier, size), header_len)));
             }
             let start =
                 try!(
@@ -256,6 +258,7 @@ impl Header {
                 return Err(Error::new(ErrorKind::InvalidData, msg));
             }
             size -= padded_length;
+            header_len += padded_length;
             let mut id_buffer = vec![0; padded_length as usize];
             let bytes_read = try!(reader.read(&mut id_buffer));
             if bytes_read < id_buffer.len() {
@@ -268,14 +271,17 @@ impl Header {
             }
             identifier = id_buffer;
         }
-        Ok(Some(Header {
-            identifier: identifier,
-            mtime: mtime,
-            uid: uid,
-            gid: gid,
-            mode: mode,
-            size: size,
-        }))
+        Ok(Some((
+            Header {
+                identifier: identifier,
+                mtime: mtime,
+                uid: uid,
+                gid: gid,
+                mode: mode,
+                size: size,
+            },
+            header_len,
+        )))
     }
 
     fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
@@ -327,15 +333,23 @@ fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
 
 // ========================================================================= //
 
+struct HeaderAndLocation {
+    header: Header,
+    header_start: u64,
+    data_start: u64,
+}
+
+// ========================================================================= //
+
 /// A structure for reading archives.
 pub struct Archive<R: Read> {
     reader: R,
     variant: Variant,
     name_table: Vec<u8>,
-    entry_headers: Vec<(Header, u64)>,
+    entry_headers: Vec<HeaderAndLocation>,
     new_entry_start: u64,
     next_entry_index: usize,
-    symbol_table_header: Option<(Header, u64)>,
+    symbol_table_header: Option<HeaderAndLocation>,
     symbol_table: Option<Vec<(Vec<u8>, u64)>>,
     started: bool, // True if we've read past the global header.
     padding: bool, // True if there's a padding byte before the next entry.
@@ -433,16 +447,13 @@ impl<R: Read> Archive<R> {
                 &mut self.variant,
                 &mut self.name_table,
             ) {
-                Ok(Some(header)) => {
+                Ok(Some((header, header_len))) => {
                     let size = header.size();
                     if size % 2 != 0 {
                         self.padding = true;
                     }
                     if self.next_entry_index == self.entry_headers.len() {
-                        self.new_entry_start += ENTRY_HEADER_LEN as u64 + size;
-                        if size % 2 != 0 {
-                            self.new_entry_start += 1;
-                        }
+                        self.new_entry_start += header_len + size + (size % 2);
                     }
                     if self.variant == Variant::GNU {
                         if header.identifier() == GNU_NAME_TABLE_ID {
@@ -450,14 +461,23 @@ impl<R: Read> Archive<R> {
                         }
                         if header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID {
                             self.symbol_table_header =
-                                Some((header, header_start));
+                                Some(HeaderAndLocation {
+                                    header: header,
+                                    header_start: header_start,
+                                    data_start: header_start + header_len,
+                                });
                             continue;
                         }
                     }
                     if self.next_entry_index == self.entry_headers.len() {
-                        self.entry_headers.push((header, header_start));
+                        self.entry_headers.push(HeaderAndLocation {
+                            header: header,
+                            header_start: header_start,
+                            data_start: header_start + header_len,
+                        });
                     }
-                    let header = &self.entry_headers[self.next_entry_index].0;
+                    let header = &self.entry_headers[self.next_entry_index]
+                        .header;
                     self.next_entry_index += 1;
                     return Some(Ok(Entry {
                         header: header,
@@ -488,35 +508,41 @@ impl<R: Read + Seek> Archive<R> {
         loop {
             let header_start = self.new_entry_start;
             try!(self.reader.seek(SeekFrom::Start(header_start)));
-            if let Some(header) = try!(Header::read(
-                &mut self.reader,
-                &mut self.variant,
-                &mut self.name_table,
-            ))
+            if let Some((header, header_len)) =
+                try!(Header::read(
+                    &mut self.reader,
+                    &mut self.variant,
+                    &mut self.name_table,
+                ))
             {
                 let size = header.size();
-                self.new_entry_start += ENTRY_HEADER_LEN as u64 + size;
-                if size % 2 != 0 {
-                    self.new_entry_start += 1;
-                }
+                self.new_entry_start += header_len + size + (size % 2);
                 if self.variant == Variant::GNU {
                     if header.identifier() == GNU_NAME_TABLE_ID {
                         continue;
                     }
                     if header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID {
-                        self.symbol_table_header =
-                            Some((header, header_start));
+                        self.symbol_table_header = Some(HeaderAndLocation {
+                            header: header,
+                            header_start: header_start,
+                            data_start: header_start + header_len,
+                        });
                         continue;
                     }
                 }
-                self.entry_headers.push((header, header_start));
+                self.entry_headers.push(HeaderAndLocation {
+                    header: header,
+                    header_start: header_start,
+                    data_start: header_start + header_len,
+                });
             } else {
                 break;
             }
         }
         // Resume our previous position in the file.
         if self.next_entry_index < self.entry_headers.len() {
-            let offset = self.entry_headers[self.next_entry_index].1;
+            let offset = self.entry_headers[self.next_entry_index]
+                .header_start;
             try!(self.reader.seek(SeekFrom::Start(offset)));
         }
         self.scanned = true;
@@ -540,10 +566,10 @@ impl<R: Read + Seek> Archive<R> {
             return Err(Error::new(ErrorKind::InvalidInput, msg));
         }
         if index != self.next_entry_index {
-            let offset = self.entry_headers[index].1 + ENTRY_HEADER_LEN as u64;
+            let offset = self.entry_headers[index].data_start;
             try!(self.reader.seek(SeekFrom::Start(offset)));
         }
-        let header = &self.entry_headers[index].0;
+        let header = &self.entry_headers[index].header;
         let size = header.size();
         if size % 2 != 0 {
             self.padding = true;
@@ -562,11 +588,12 @@ impl<R: Read + Seek> Archive<R> {
         if self.symbol_table.is_some() {
             return Ok(());
         }
-        if let Some((ref header, header_start)) = self.symbol_table_header {
-            let offset = header_start + ENTRY_HEADER_LEN as u64;
+        if let Some(ref header_and_loc) = self.symbol_table_header {
+            let offset = header_and_loc.data_start;
             try!(self.reader.seek(SeekFrom::Start(offset)));
-            let mut reader =
-                BufReader::new(self.reader.by_ref().take(header.size()));
+            let mut reader = BufReader::new(self.reader.by_ref().take(
+                header_and_loc.header.size(),
+            ));
             let num_symbols = try!(reader.read_u32::<BigEndian>()) as usize;
             let mut symbol_offsets = Vec::<u64>::with_capacity(num_symbols);
             for _ in 0..num_symbols {
@@ -587,7 +614,8 @@ impl<R: Read + Seek> Archive<R> {
         }
         // Resume our previous position in the file.
         if self.entry_headers.len() > 0 {
-            let offset = self.entry_headers[self.next_entry_index].1;
+            let offset = self.entry_headers[self.next_entry_index]
+                .header_start;
             try!(self.reader.seek(SeekFrom::Start(offset)));
         }
         Ok(())
@@ -1264,6 +1292,37 @@ mod tests {
     }
 
     #[test]
+    fn count_entries_in_bsd_archive() {
+        let input = b"\
+        !<arch>\n\
+        #1/32           1487552916  501   20    100644  39        `\n\
+        this_is_a_very_long_filename.txtfoobar\n\n\
+        baz.txt         0           0     0     0       4         `\n\
+        baz\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        assert_eq!(archive.count_entries().unwrap(), 2);
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt".as_bytes()
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        assert_eq!(archive.count_entries().unwrap(), 2);
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "baz.txt".as_bytes());
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
+        }
+        assert_eq!(archive.count_entries().unwrap(), 2);
+    }
+
+    #[test]
     fn count_entries_in_gnu_archive() {
         let input = b"\
         !<arch>\n\
@@ -1296,6 +1355,59 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert_eq!(archive.count_entries().unwrap(), 2);
+    }
+
+    #[test]
+    fn jump_to_entry_in_bsd_archive() {
+        let input = b"\
+        !<arch>\n\
+        hello.txt       1487552316  42    12345 100644  14        `\n\
+        Hello, world!\n\
+        #1/32           1487552916  501   20    100644  39        `\n\
+        this_is_a_very_long_filename.txtfoobar\n\n\
+        baz.txt         1487552349  42    12345 100664  4         `\n\
+        baz\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        {
+            // Jump to the second entry and check its contents.
+            let mut entry = archive.jump_to_entry(1).unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt".as_bytes()
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        {
+            // Read the next entry, which should be the third one now.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "baz.txt".as_bytes());
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
+        }
+        // We should be at the end of the archive now.
+        assert!(archive.next_entry().is_none());
+        {
+            // Jump back to the first entry and check its contents.
+            let mut entry = archive.jump_to_entry(0).unwrap();
+            assert_eq!(entry.header().identifier(), "hello.txt".as_bytes());
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "Hello, world!\n".as_bytes());
+        }
+        {
+            // Read the next entry, which should be the second one again.
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt".as_bytes()
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
     }
 
     #[test]
