@@ -69,7 +69,7 @@
 
 extern crate byteorder;
 
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::cmp;
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
@@ -93,6 +93,9 @@ const GLOBAL_HEADER_LEN: usize = 8;
 const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const ENTRY_HEADER_LEN: usize = 60;
+
+const BSD_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"__.SYMDEF";
+const BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"__.SYMDEF SORTED";
 
 const GNU_NAME_TABLE_ID: &[u8] = b"//";
 const GNU_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"/";
@@ -270,6 +273,14 @@ impl Header {
                 id_buffer.pop();
             }
             identifier = id_buffer;
+            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
+                identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+            {
+                try!(
+                    io::copy(&mut reader.by_ref().take(size), &mut io::sink())
+                );
+                return Ok(Some((Header::new(identifier, size), header_len)));
+            }
         }
         Ok(Some((
             Header {
@@ -388,6 +399,21 @@ impl<R: Read> Archive<R> {
     /// Unwrap this archive reader, returning the underlying reader object.
     pub fn into_inner(self) -> Result<R> { Ok(self.reader) }
 
+    fn is_name_table_id(&self, identifier: &[u8]) -> bool {
+        self.variant == Variant::GNU && identifier == GNU_NAME_TABLE_ID
+    }
+
+    fn is_symbol_lookup_table_id(&self, identifier: &[u8]) -> bool {
+        match self.variant {
+            Variant::Common => false,
+            Variant::BSD => {
+                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
+                    identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+            }
+            Variant::GNU => identifier == GNU_SYMBOL_LOOKUP_TABLE_ID,
+        }
+    }
+
     fn read_global_header_if_necessary(&mut self) -> Result<()> {
         if self.started {
             return Ok(());
@@ -455,19 +481,16 @@ impl<R: Read> Archive<R> {
                     if self.next_entry_index == self.entry_headers.len() {
                         self.new_entry_start += header_len + size + (size % 2);
                     }
-                    if self.variant == Variant::GNU {
-                        if header.identifier() == GNU_NAME_TABLE_ID {
-                            continue;
-                        }
-                        if header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID {
-                            self.symbol_table_header =
-                                Some(HeaderAndLocation {
-                                    header: header,
-                                    header_start: header_start,
-                                    data_start: header_start + header_len,
-                                });
-                            continue;
-                        }
+                    if self.is_name_table_id(header.identifier()) {
+                        continue;
+                    }
+                    if self.is_symbol_lookup_table_id(header.identifier()) {
+                        self.symbol_table_header = Some(HeaderAndLocation {
+                            header: header,
+                            header_start: header_start,
+                            data_start: header_start + header_len,
+                        });
+                        continue;
                     }
                     if self.next_entry_index == self.entry_headers.len() {
                         self.entry_headers.push(HeaderAndLocation {
@@ -517,18 +540,16 @@ impl<R: Read + Seek> Archive<R> {
             {
                 let size = header.size();
                 self.new_entry_start += header_len + size + (size % 2);
-                if self.variant == Variant::GNU {
-                    if header.identifier() == GNU_NAME_TABLE_ID {
-                        continue;
-                    }
-                    if header.identifier() == GNU_SYMBOL_LOOKUP_TABLE_ID {
-                        self.symbol_table_header = Some(HeaderAndLocation {
-                            header: header,
-                            header_start: header_start,
-                            data_start: header_start + header_len,
-                        });
-                        continue;
-                    }
+                if self.is_name_table_id(header.identifier()) {
+                    continue;
+                }
+                if self.is_symbol_lookup_table_id(header.identifier()) {
+                    self.symbol_table_header = Some(HeaderAndLocation {
+                        header: header,
+                        header_start: header_start,
+                        data_start: header_start + header_len,
+                    });
+                    continue;
                 }
                 self.entry_headers.push(HeaderAndLocation {
                     header: header,
@@ -594,23 +615,53 @@ impl<R: Read + Seek> Archive<R> {
             let mut reader = BufReader::new(self.reader.by_ref().take(
                 header_and_loc.header.size(),
             ));
-            let num_symbols = try!(reader.read_u32::<BigEndian>()) as usize;
-            let mut symbol_offsets = Vec::<u64>::with_capacity(num_symbols);
-            for _ in 0..num_symbols {
-                let offset = try!(reader.read_u32::<BigEndian>()) as u64;
-                symbol_offsets.push(offset);
-            }
-            let mut symbol_table = Vec::with_capacity(num_symbols);
-            for offset in symbol_offsets.into_iter() {
-                let mut buffer = Vec::<u8>::new();
-                try!(reader.read_until(0, &mut buffer));
-                if buffer.last() == Some(&0) {
-                    buffer.pop();
+            if self.variant == Variant::GNU {
+                let num_symbols = try!(reader.read_u32::<BigEndian>()) as
+                    usize;
+                let mut symbol_offsets =
+                    Vec::<u32>::with_capacity(num_symbols);
+                for _ in 0..num_symbols {
+                    let offset = try!(reader.read_u32::<BigEndian>());
+                    symbol_offsets.push(offset);
                 }
-                buffer.shrink_to_fit();
-                symbol_table.push((buffer, offset));
+                let mut symbol_table = Vec::with_capacity(num_symbols);
+                for offset in symbol_offsets.into_iter() {
+                    let mut buffer = Vec::<u8>::new();
+                    try!(reader.read_until(0, &mut buffer));
+                    if buffer.last() == Some(&0) {
+                        buffer.pop();
+                    }
+                    buffer.shrink_to_fit();
+                    symbol_table.push((buffer, offset as u64));
+                }
+                self.symbol_table = Some(symbol_table);
+            } else {
+                let num_symbols =
+                    (try!(reader.read_u32::<LittleEndian>()) / 8) as usize;
+                let mut symbol_offsets =
+                    Vec::<(u32, u32)>::with_capacity(num_symbols);
+                for _ in 0..num_symbols {
+                    let str_offset = try!(reader.read_u32::<LittleEndian>());
+                    let file_offset = try!(reader.read_u32::<LittleEndian>());
+                    symbol_offsets.push((str_offset, file_offset));
+                }
+                let str_table_len = try!(reader.read_u32::<LittleEndian>());
+                let mut str_table_data = vec![0u8; str_table_len as usize];
+                try!(reader.read_exact(&mut str_table_data));
+                let mut symbol_table = Vec::with_capacity(num_symbols);
+                for (str_start, file_offset) in symbol_offsets.into_iter() {
+                    let str_start = str_start as usize;
+                    let mut str_end = str_start;
+                    while str_end < str_table_data.len() &&
+                        str_table_data[str_end] != 0u8
+                    {
+                        str_end += 1;
+                    }
+                    let string = &str_table_data[str_start..str_end];
+                    symbol_table.push((string.to_vec(), file_offset as u64));
+                }
+                self.symbol_table = Some(symbol_table);
             }
-            self.symbol_table = Some(symbol_table);
         }
         // Resume our previous position in the file.
         if self.entry_headers.len() > 0 {
@@ -1463,6 +1514,46 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
         }
+    }
+
+    #[test]
+    fn list_symbols_in_bsd_archive() {
+        let input = b"\
+        !<arch>\n\
+        #1/12           0           0     0     0       60        `\n\
+        __.SYMDEF\x00\x00\x00\x18\x00\x00\x00\
+        \x00\x00\x00\x00\x80\x00\x00\x00\
+        \x07\x00\x00\x00\x80\x00\x00\x00\
+        \x0b\x00\x00\x00\x80\x00\x00\x00\
+        \x10\x00\x00\x00foobar\x00baz\x00quux\x00\
+        foo.o/          1487552916  501   20    100644  16        `\n\
+        foobar,baz,quux\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        assert_eq!(archive.symbols().unwrap().len(), 3);
+        assert_eq!(archive.variant(), Variant::BSD);
+        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
+        let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
+        assert_eq!(symbols, expected);
+    }
+
+    #[test]
+    fn list_sorted_symbols_in_bsd_archive() {
+        let input = b"\
+        !<arch>\n\
+        #1/16           0           0     0     0       64        `\n\
+        __.SYMDEF SORTED\x18\x00\x00\x00\
+        \x00\x00\x00\x00\x80\x00\x00\x00\
+        \x04\x00\x00\x00\x80\x00\x00\x00\
+        \x0b\x00\x00\x00\x80\x00\x00\x00\
+        \x10\x00\x00\x00baz\x00foobar\x00quux\x00\
+        foo.o/          1487552916  501   20    100644  16        `\n\
+        foobar,baz,quux\n";
+        let mut archive = Archive::new(Cursor::new(input as &[u8]));
+        assert_eq!(archive.symbols().unwrap().len(), 3);
+        assert_eq!(archive.variant(), Variant::BSD);
+        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
+        let expected: Vec<&[u8]> = vec![b"baz", b"foobar", b"quux"];
+        assert_eq!(symbols, expected);
     }
 
     #[test]
