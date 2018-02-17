@@ -234,7 +234,7 @@ impl Header {
                     parse_number("GNU filename index", &buffer[1..16], 10)
                 ) as usize;
             let end =
-                match name_table[start..].iter().position(|&ch| ch == b'/') {
+                match name_table[start..].iter().position(|&ch| ch == b'/' || ch == b'\x00') {
                     Some(len) => start + len,
                     None => name_table.len(),
                 };
