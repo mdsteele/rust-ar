@@ -1145,6 +1145,52 @@ mod tests {
         assert_eq!(archive.variant(), Variant::GNU);
     }
 
+    /*
+     * MS .lib files are very similar to GNU `ar` archives, but with a few tweaks:
+     * * file names in the name table are terminated by null, rather than /\n
+     * * numeric entries may be all empty string, interpreted as 0, possibly?
+     */
+    #[test]
+    fn read_ms_archive_with_long_filenames() {
+        let input = "\
+        !<arch>\n\
+        //                                              76        `\n\
+        this_is_a_very_long_filename.txt\x00\
+        and_this_is_another_very_long_filename.txt\x00\
+        /0              1487552916              100644  7         `\n\
+        foobar\n\n\
+        /33             1446790218              100666  4         `\n\
+        baz\n";
+        let mut archive = Archive::new(input.as_bytes());
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt".as_bytes()
+            );
+            assert_eq!(entry.header().mtime(), 1487552916);
+            assert_eq!(entry.header().uid(), 0);
+            assert_eq!(entry.header().gid(), 0);
+            assert_eq!(entry.header().mode(), 0o100644);
+            assert_eq!(entry.header().size(), 7);
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "and_this_is_another_very_long_filename.txt".as_bytes()
+            );
+            assert_eq!(entry.header().size(), 4);
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
+        }
+        assert_eq!(archive.variant(), Variant::GNU);
+    }
+
     #[test]
     fn read_gnu_archive_with_space_in_filename() {
         let input = "\
