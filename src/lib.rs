@@ -244,8 +244,20 @@ impl Header {
             identifier.pop();
         }
         let mtime = try!(parse_number("timestamp", &buffer[16..28], 10));
-        let uid = try!(parse_number("owner ID", &buffer[28..34], 10)) as u32;
-        let gid = try!(parse_number("group ID", &buffer[34..40], 10)) as u32;
+        let uid = try!(
+            if *variant == Variant::GNU {
+                parse_number_permitting_empty("owner ID", &buffer[28..34], 10)
+            } else {
+                parse_number("owner ID", &buffer[28..34], 10)
+            }
+        ) as u32;
+        let gid = try!(
+            if *variant == Variant::GNU {
+                parse_number_permitting_empty("group ID", &buffer[34..40], 10)
+            } else {
+                parse_number("group ID", &buffer[34..40], 10)
+            }
+        ) as u32;
         let mode = try!(parse_number("file mode", &buffer[40..48], 8)) as u32;
         if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
             *variant = Variant::BSD;
@@ -331,6 +343,27 @@ impl Header {
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         if let Ok(value) = u64::from_str_radix(string.trim_right(), radix) {
+            return Ok(value);
+        }
+    }
+    let msg = format!(
+        "Invalid {} field in entry header ({:?})",
+        field_name,
+        String::from_utf8_lossy(bytes)
+    );
+    Err(Error::new(ErrorKind::InvalidData, msg))
+}
+
+/*
+ * Equivalent to parse_number() except for the case of bytes being
+ * all spaces (eg all 0x20) as MS tools emit for UID/GID
+ */
+fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
+    if let Ok(string) = str::from_utf8(bytes) {
+        let trimmed = string.trim_right();
+        if trimmed.len() == 0 {
+            return Ok(0);
+        } else if let Ok(value) = u64::from_str_radix(trimmed, radix) {
             return Ok(value);
         }
     }
