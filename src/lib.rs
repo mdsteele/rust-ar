@@ -234,7 +234,7 @@ impl Header {
                     parse_number("GNU filename index", &buffer[1..16], 10)
                 ) as usize;
             let end =
-                match name_table[start..].iter().position(|&ch| ch == b'/') {
+                match name_table[start..].iter().position(|&ch| ch == b'/' || ch == b'\x00') {
                     Some(len) => start + len,
                     None => name_table.len(),
                 };
@@ -244,8 +244,20 @@ impl Header {
             identifier.pop();
         }
         let mtime = try!(parse_number("timestamp", &buffer[16..28], 10));
-        let uid = try!(parse_number("owner ID", &buffer[28..34], 10)) as u32;
-        let gid = try!(parse_number("group ID", &buffer[34..40], 10)) as u32;
+        let uid = try!(
+            if *variant == Variant::GNU {
+                parse_number_permitting_empty("owner ID", &buffer[28..34], 10)
+            } else {
+                parse_number("owner ID", &buffer[28..34], 10)
+            }
+        ) as u32;
+        let gid = try!(
+            if *variant == Variant::GNU {
+                parse_number_permitting_empty("group ID", &buffer[34..40], 10)
+            } else {
+                parse_number("group ID", &buffer[34..40], 10)
+            }
+        ) as u32;
         let mode = try!(parse_number("file mode", &buffer[40..48], 8)) as u32;
         if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
             *variant = Variant::BSD;
@@ -331,6 +343,27 @@ impl Header {
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         if let Ok(value) = u64::from_str_radix(string.trim_right(), radix) {
+            return Ok(value);
+        }
+    }
+    let msg = format!(
+        "Invalid {} field in entry header ({:?})",
+        field_name,
+        String::from_utf8_lossy(bytes)
+    );
+    Err(Error::new(ErrorKind::InvalidData, msg))
+}
+
+/*
+ * Equivalent to parse_number() except for the case of bytes being
+ * all spaces (eg all 0x20) as MS tools emit for UID/GID
+ */
+fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
+    if let Ok(string) = str::from_utf8(bytes) {
+        let trimmed = string.trim_right();
+        if trimmed.len() == 0 {
+            return Ok(0);
+        } else if let Ok(value) = u64::from_str_radix(trimmed, radix) {
             return Ok(value);
         }
     }
@@ -1125,6 +1158,52 @@ mod tests {
             assert_eq!(entry.header().mtime(), 1487552916);
             assert_eq!(entry.header().uid(), 501);
             assert_eq!(entry.header().gid(), 20);
+            assert_eq!(entry.header().mode(), 0o100644);
+            assert_eq!(entry.header().size(), 7);
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "and_this_is_another_very_long_filename.txt".as_bytes()
+            );
+            assert_eq!(entry.header().size(), 4);
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
+        }
+        assert_eq!(archive.variant(), Variant::GNU);
+    }
+
+    /*
+     * MS .lib files are very similar to GNU `ar` archives, but with a few tweaks:
+     * * file names in the name table are terminated by null, rather than /\n
+     * * numeric entries may be all empty string, interpreted as 0, possibly?
+     */
+    #[test]
+    fn read_ms_archive_with_long_filenames() {
+        let input = "\
+        !<arch>\n\
+        //                                              76        `\n\
+        this_is_a_very_long_filename.txt\x00\
+        and_this_is_another_very_long_filename.txt\x00\
+        /0              1487552916              100644  7         `\n\
+        foobar\n\n\
+        /33             1446790218              100666  4         `\n\
+        baz\n";
+        let mut archive = Archive::new(input.as_bytes());
+        {
+            let mut entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt".as_bytes()
+            );
+            assert_eq!(entry.header().mtime(), 1487552916);
+            assert_eq!(entry.header().uid(), 0);
+            assert_eq!(entry.header().gid(), 0);
             assert_eq!(entry.header().mode(), 0o100644);
             assert_eq!(entry.header().size(), 7);
             let mut buffer = Vec::new();
