@@ -2,7 +2,7 @@
 
 A rust library for encoding/decoding Unix archive (.a) files.
 
-Documentation: https://mdsteele.github.io/rust-ar/
+Documentation: https://docs.rs/ar
 
 ## Overview
 
