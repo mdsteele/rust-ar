@@ -208,8 +208,15 @@ impl Header {
         if bytes_read == 0 {
             return Ok(None);
         } else if bytes_read < buffer.len() {
-            let msg = "Unexpected EOF in the middle of archive entry header";
-            return Err(Error::new(ErrorKind::UnexpectedEof, msg));
+            if let Err(error) = reader.read_exact(&mut buffer[bytes_read..]) {
+                if error.kind() == ErrorKind::UnexpectedEof {
+                    let msg =
+                        "Unexpected EOF in the middle of archive entry header";
+                    return Err(Error::new(ErrorKind::UnexpectedEof, msg));
+                } else {
+                    return Err(error);
+                }
+            }
         }
         let mut identifier = buffer[0..16].to_vec();
         while identifier.last() == Some(&b' ') {
@@ -277,9 +284,16 @@ impl Header {
             let mut id_buffer = vec![0; padded_length as usize];
             let bytes_read = try!(reader.read(&mut id_buffer));
             if bytes_read < id_buffer.len() {
-                let msg = "Unexpected EOF in the middle of extended entry \
-                           identifier";
-                return Err(Error::new(ErrorKind::UnexpectedEof, msg));
+                if let Err(error) =
+                    reader.read_exact(&mut id_buffer[bytes_read..])
+                {
+                    if error.kind() == ErrorKind::UnexpectedEof {
+                        let msg = "Unexpected EOF in the middle of extended entry identifier";
+                        return Err(Error::new(ErrorKind::UnexpectedEof, msg));
+                    } else {
+                        return Err(error);
+                    }
+                }
             }
             while id_buffer.last() == Some(&0) {
                 id_buffer.pop();
@@ -929,8 +943,24 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{Archive, Builder, Header, Variant};
-    use std::io::{Cursor, Read, Seek, SeekFrom};
+    use std::io::{Cursor, Read, Result, Seek, SeekFrom};
     use std::str;
+
+    struct SlowReader<'a> {
+        current_position: usize,
+        buffer: &'a [u8],
+    }
+
+    impl<'a> Read for SlowReader<'a> {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+            if self.current_position >= self.buffer.len() {
+                return Ok(0);
+            }
+            buf[0] = self.buffer[self.current_position];
+            self.current_position += 1;
+            return Ok(1);
+        }
+    }
 
     #[test]
     fn build_common_archive() {
@@ -1002,7 +1032,8 @@ mod tests {
         This file is awesome!\n\
         baz.txt         1487552349  42    12345 100664  4         `\n\
         baz\n";
-        let mut archive = Archive::new(input.as_bytes());
+        let reader = SlowReader{ current_position: 0, buffer: input.as_bytes() };
+        let mut archive = Archive::new(reader);
         {
             // Parse the first entry and check the header values.
             let mut entry = archive.next_entry().unwrap().unwrap();
