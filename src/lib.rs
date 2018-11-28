@@ -210,11 +210,12 @@ impl Header {
         } else if bytes_read < buffer.len() {
             if let Err(error) = reader.read_exact(&mut buffer[bytes_read..]) {
                 if error.kind() == ErrorKind::UnexpectedEof {
-                    let msg =
-                        "Unexpected EOF in the middle of archive entry header";
+                    let msg = "unexpected EOF in the middle of archive entry \
+                               header";
                     return Err(Error::new(ErrorKind::UnexpectedEof, msg));
                 } else {
-                    return Err(error);
+                    let msg = "failed to read archive entry header";
+                    return Err(annotate(error, msg));
                 }
             }
         }
@@ -233,38 +234,39 @@ impl Header {
                 return Ok(Some((Header::new(identifier, size), header_len)));
             } else if identifier == GNU_NAME_TABLE_ID {
                 *name_table = vec![0; size as usize];
-                try!(reader.read_exact(name_table as &mut [u8]));
+                try!(
+                    reader.read_exact(name_table as &mut [u8]).map_err(|err| {
+                        annotate(err, "failed to read name table")
+                    })
+                );
                 return Ok(Some((Header::new(identifier, size), header_len)));
             }
             let start =
                 try!(
                     parse_number("GNU filename index", &buffer[1..16], 10)
                 ) as usize;
-            let end =
-                match name_table[start..].iter().position(|&ch| ch == b'/' || ch == b'\x00') {
-                    Some(len) => start + len,
-                    None => name_table.len(),
-                };
+            let end = match name_table[start..].iter().position(|&ch| {
+                ch == b'/' || ch == b'\x00'
+            }) {
+                Some(len) => start + len,
+                None => name_table.len(),
+            };
             identifier = name_table[start..end].to_vec();
         } else if *variant != Variant::BSD && identifier.ends_with(b"/") {
             *variant = Variant::GNU;
             identifier.pop();
         }
         let mtime = try!(parse_number("timestamp", &buffer[16..28], 10));
-        let uid = try!(
-            if *variant == Variant::GNU {
-                parse_number_permitting_empty("owner ID", &buffer[28..34], 10)
-            } else {
-                parse_number("owner ID", &buffer[28..34], 10)
-            }
-        ) as u32;
-        let gid = try!(
-            if *variant == Variant::GNU {
-                parse_number_permitting_empty("group ID", &buffer[34..40], 10)
-            } else {
-                parse_number("group ID", &buffer[34..40], 10)
-            }
-        ) as u32;
+        let uid = try!(if *variant == Variant::GNU {
+            parse_number_permitting_empty("owner ID", &buffer[28..34], 10)
+        } else {
+            parse_number("owner ID", &buffer[28..34], 10)
+        }) as u32;
+        let gid = try!(if *variant == Variant::GNU {
+            parse_number_permitting_empty("group ID", &buffer[34..40], 10)
+        } else {
+            parse_number("group ID", &buffer[34..40], 10)
+        }) as u32;
         let mode = try!(parse_number("file mode", &buffer[40..48], 8)) as u32;
         if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
             *variant = Variant::BSD;
@@ -284,14 +286,17 @@ impl Header {
             let mut id_buffer = vec![0; padded_length as usize];
             let bytes_read = try!(reader.read(&mut id_buffer));
             if bytes_read < id_buffer.len() {
-                if let Err(error) =
-                    reader.read_exact(&mut id_buffer[bytes_read..])
+                if let Err(error) = reader.read_exact(
+                    &mut id_buffer[bytes_read..],
+                )
                 {
                     if error.kind() == ErrorKind::UnexpectedEof {
-                        let msg = "Unexpected EOF in the middle of extended entry identifier";
+                        let msg = "unexpected EOF in the middle of extended \
+                                   entry identifier";
                         return Err(Error::new(ErrorKind::UnexpectedEof, msg));
                     } else {
-                        return Err(error);
+                        let msg = "failed to read extended entry identifier";
+                        return Err(annotate(error, msg));
                     }
                 }
             }
@@ -372,7 +377,8 @@ fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
  * Equivalent to parse_number() except for the case of bytes being
  * all spaces (eg all 0x20) as MS tools emit for UID/GID
  */
-fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
+fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32)
+    -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         let trimmed = string.trim_right();
         if trimmed.len() == 0 {
@@ -470,7 +476,7 @@ impl<R: Read> Archive<R> {
             Ok(()) => {}
             Err(error) => {
                 self.error = true;
-                return Err(error);
+                return Err(annotate(error, "failed to read global header"));
             }
         }
         if &buffer != GLOBAL_HEADER {
@@ -499,18 +505,25 @@ impl<R: Read> Archive<R> {
                 Err(error) => return Some(Err(error)),
             }
             if self.padding {
-                let mut buffer = [0; 1];
+                let mut buffer = [0u8; 1];
                 match self.reader.read_exact(&mut buffer) {
-                    Ok(()) => {}
-                    Err(error) => {
-                        self.error = true;
-                        return Some(Err(error));
+                    Ok(()) => {
+                        if buffer[0] != b'\n' {
+                            self.error = true;
+                            let msg = format!("invalid padding byte ({})",
+                                              buffer[0]);
+                            let error =
+                                Error::new(ErrorKind::InvalidData, msg);
+                            return Some(Err(error));
+                        }
                     }
-                }
-                if &buffer != b"\n" {
-                    self.error = true;
-                    let msg = "Invalid padding byte";
-                    return Some(Err(Error::new(ErrorKind::InvalidData, msg)));
+                    Err(error) => {
+                        if error.kind() != ErrorKind::UnexpectedEof {
+                            self.error = true;
+                            let msg = "failed to read padding byte";
+                            return Some(Err(annotate(error, msg)));
+                        }
+                    }
                 }
                 self.padding = false;
             }
@@ -694,7 +707,9 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 let str_table_len = try!(reader.read_u32::<LittleEndian>());
                 let mut str_table_data = vec![0u8; str_table_len as usize];
-                try!(reader.read_exact(&mut str_table_data));
+                try!(reader.read_exact(&mut str_table_data).map_err(|err| {
+                    annotate(err, "failed to read string table")
+                }));
                 let mut symbol_table = Vec::with_capacity(num_symbols);
                 for (str_start, file_offset) in symbol_offsets.into_iter() {
                     let str_start = str_start as usize;
@@ -940,6 +955,17 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 
 // ========================================================================= //
 
+fn annotate(error: io::Error, msg: &str) -> io::Error {
+    let kind = error.kind();
+    if let Some(inner) = error.into_inner() {
+        io::Error::new(kind, format!("{}: {}", msg, inner))
+    } else {
+        io::Error::new(kind, msg)
+    }
+}
+
+// ========================================================================= //
+
 #[cfg(test)]
 mod tests {
     use super::{Archive, Builder, Header, Variant};
@@ -1032,7 +1058,10 @@ mod tests {
         This file is awesome!\n\
         baz.txt         1487552349  42    12345 100664  4         `\n\
         baz\n";
-        let reader = SlowReader{ current_position: 0, buffer: input.as_bytes() };
+        let reader = SlowReader {
+            current_position: 0,
+            buffer: input.as_bytes(),
+        };
         let mut archive = Archive::new(reader);
         {
             // Parse the first entry and check the header values.
@@ -1068,6 +1097,7 @@ mod tests {
             assert_eq!(entry.header().identifier(), b"baz.txt");
             assert_eq!(entry.header().size(), 4);
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::Common);
     }
 
@@ -1115,6 +1145,7 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::BSD);
     }
 
@@ -1133,6 +1164,7 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::BSD);
     }
 
@@ -1165,6 +1197,7 @@ mod tests {
             assert_eq!(entry.header().identifier(), "baz.txt".as_bytes());
             assert_eq!(entry.header().size(), 4);
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::GNU);
     }
 
@@ -1206,14 +1239,14 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::GNU);
     }
 
-    /*
-     * MS .lib files are very similar to GNU `ar` archives, but with a few tweaks:
-     * * file names in the name table are terminated by null, rather than /\n
-     * * numeric entries may be all empty string, interpreted as 0, possibly?
-     */
+    // MS `.lib` files are very similar to GNU `ar` archives, but with a few
+    // tweaks:
+    // * File names in the name table are terminated by null, rather than /\n
+    // * Numeric entries may be all empty string, interpreted as 0, possibly?
     #[test]
     fn read_ms_archive_with_long_filenames() {
         let input = "\
@@ -1252,6 +1285,7 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::GNU);
     }
 
@@ -1270,6 +1304,7 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
+        assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::GNU);
     }
 
@@ -1294,6 +1329,29 @@ mod tests {
             entry.read_to_end(&mut buffer).unwrap();
             assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
         }
+        assert!(archive.next_entry().is_none());
+    }
+
+    #[test]
+    fn read_archive_with_no_padding_byte_in_final_entry() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         1487552916  501   20    100644  7         `\n\
+        foobar\n\n\
+        bar.txt         1487552919  501   20    100644  3         `\n\
+        foo";
+        let mut archive = Archive::new(input.as_bytes());
+        {
+            let entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "foo.txt".as_bytes());
+            assert_eq!(entry.header().size(), 7);
+        }
+        {
+            let entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "bar.txt".as_bytes());
+            assert_eq!(entry.header().size(), 3);
+        }
+        assert!(archive.next_entry().is_none());
     }
 
     #[test]
