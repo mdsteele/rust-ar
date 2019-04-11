@@ -4,3 +4,4 @@ format_strings = false
 max_width = 79
 reorder_imported_names = true
 report_fixme = "Always"
+use_try_shorthand = true

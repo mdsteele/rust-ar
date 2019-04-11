@@ -204,7 +204,7 @@ impl Header {
         R: Read,
     {
         let mut buffer = [0; 60];
-        let bytes_read = try!(reader.read(&mut buffer));
+        let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
             return Ok(None);
         } else if bytes_read < buffer.len() {
@@ -223,28 +223,23 @@ impl Header {
         while identifier.last() == Some(&b' ') {
             identifier.pop();
         }
-        let mut size = try!(parse_number("file size", &buffer[48..58], 10));
+        let mut size = parse_number("file size", &buffer[48..58], 10)?;
         let mut header_len = ENTRY_HEADER_LEN as u64;
         if *variant != Variant::BSD && identifier.starts_with(b"/") {
             *variant = Variant::GNU;
             if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID {
-                try!(
-                    io::copy(&mut reader.by_ref().take(size), &mut io::sink())
-                );
+                io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             } else if identifier == GNU_NAME_TABLE_ID {
                 *name_table = vec![0; size as usize];
-                try!(
-                    reader.read_exact(name_table as &mut [u8]).map_err(|err| {
-                        annotate(err, "failed to read name table")
-                    })
-                );
+                reader.read_exact(name_table as &mut [u8]).map_err(|err| {
+                    annotate(err, "failed to read name table")
+                })?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             }
             let start =
-                try!(
-                    parse_number("GNU filename index", &buffer[1..16], 10)
-                ) as usize;
+                parse_number("GNU filename index", &buffer[1..16], 10)? as
+                    usize;
             let end = match name_table[start..].iter().position(|&ch| {
                 ch == b'/' || ch == b'\x00'
             }) {
@@ -256,22 +251,22 @@ impl Header {
             *variant = Variant::GNU;
             identifier.pop();
         }
-        let mtime = try!(parse_number("timestamp", &buffer[16..28], 10));
-        let uid = try!(if *variant == Variant::GNU {
-            parse_number_permitting_empty("owner ID", &buffer[28..34], 10)
+        let mtime = parse_number("timestamp", &buffer[16..28], 10)?;
+        let uid = if *variant == Variant::GNU {
+            parse_number_permitting_empty("owner ID", &buffer[28..34], 10)?
         } else {
-            parse_number("owner ID", &buffer[28..34], 10)
-        }) as u32;
-        let gid = try!(if *variant == Variant::GNU {
-            parse_number_permitting_empty("group ID", &buffer[34..40], 10)
+            parse_number("owner ID", &buffer[28..34], 10)?
+        } as u32;
+        let gid = if *variant == Variant::GNU {
+            parse_number_permitting_empty("group ID", &buffer[34..40], 10)?
         } else {
-            parse_number("group ID", &buffer[34..40], 10)
-        }) as u32;
-        let mode = try!(parse_number("file mode", &buffer[40..48], 8)) as u32;
+            parse_number("group ID", &buffer[34..40], 10)?
+        } as u32;
+        let mode = parse_number("file mode", &buffer[40..48], 8)? as u32;
         if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
             *variant = Variant::BSD;
             let padded_length =
-                try!(parse_number("BSD filename length", &buffer[3..16], 10));
+                parse_number("BSD filename length", &buffer[3..16], 10)?;
             if size < padded_length {
                 let msg = format!(
                     "Entry size ({}) smaller than extended \
@@ -284,7 +279,7 @@ impl Header {
             size -= padded_length;
             header_len += padded_length;
             let mut id_buffer = vec![0; padded_length as usize];
-            let bytes_read = try!(reader.read(&mut id_buffer));
+            let bytes_read = reader.read(&mut id_buffer)?;
             if bytes_read < id_buffer.len() {
                 if let Err(error) = reader.read_exact(
                     &mut id_buffer[bytes_read..],
@@ -307,9 +302,7 @@ impl Header {
             if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
                 identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
             {
-                try!(
-                    io::copy(&mut reader.by_ref().take(size), &mut io::sink())
-                );
+                io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             }
         }
@@ -330,7 +323,7 @@ impl Header {
         if self.identifier.len() > 16 || self.identifier.contains(&b' ') {
             let padding_length = (4 - self.identifier.len() % 4) % 4;
             let padded_length = self.identifier.len() + padding_length;
-            try!(write!(
+            write!(
                 writer,
                 "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
                 padded_length,
@@ -339,13 +332,13 @@ impl Header {
                 self.gid,
                 self.mode,
                 self.size + padded_length as u64
-            ));
-            try!(writer.write_all(&self.identifier));
-            try!(writer.write_all(&vec![0; padding_length]));
+            )?;
+            writer.write_all(&self.identifier)?;
+            writer.write_all(&vec![0; padding_length])?;
         } else {
-            try!(writer.write_all(&self.identifier));
-            try!(writer.write_all(&vec![b' '; 16 - self.identifier.len()]));
-            try!(write!(
+            writer.write_all(&self.identifier)?;
+            writer.write_all(&vec![b' '; 16 - self.identifier.len()])?;
+            write!(
                 writer,
                 "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
                 self.mtime,
@@ -353,7 +346,7 @@ impl Header {
                 self.gid,
                 self.mode,
                 self.size
-            ));
+            )?;
         }
         Ok(())
     }
@@ -361,7 +354,7 @@ impl Header {
 
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
-        if let Ok(value) = u64::from_str_radix(string.trim_right(), radix) {
+        if let Ok(value) = u64::from_str_radix(string.trim_end(), radix) {
             return Ok(value);
         }
     }
@@ -380,7 +373,7 @@ fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
 fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32)
     -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
-        let trimmed = string.trim_right();
+        let trimmed = string.trim_end();
         if trimmed.len() == 0 {
             return Ok(0);
         } else if let Ok(value) = u64::from_str_radix(trimmed, radix) {
@@ -587,16 +580,16 @@ impl<R: Read + Seek> Archive<R> {
         if self.scanned {
             return Ok(());
         }
-        try!(self.read_global_header_if_necessary());
+        self.read_global_header_if_necessary()?;
         loop {
             let header_start = self.new_entry_start;
-            try!(self.reader.seek(SeekFrom::Start(header_start)));
+            self.reader.seek(SeekFrom::Start(header_start))?;
             if let Some((header, header_len)) =
-                try!(Header::read(
+                Header::read(
                     &mut self.reader,
                     &mut self.variant,
                     &mut self.name_table,
-                ))
+                )?
             {
                 let size = header.size();
                 self.new_entry_start += header_len + size + (size % 2);
@@ -624,7 +617,7 @@ impl<R: Read + Seek> Archive<R> {
         if self.next_entry_index < self.entry_headers.len() {
             let offset = self.entry_headers[self.next_entry_index]
                 .header_start;
-            try!(self.reader.seek(SeekFrom::Start(offset)));
+            self.reader.seek(SeekFrom::Start(offset))?;
         }
         self.scanned = true;
         Ok(())
@@ -634,21 +627,21 @@ impl<R: Read + Seek> Archive<R> {
     /// archive (not counting special entries, such as the GNU archive name
     /// table or symbol table, that are not returned by `next_entry()`).
     pub fn count_entries(&mut self) -> io::Result<usize> {
-        try!(self.scan_if_necessary());
+        self.scan_if_necessary()?;
         Ok(self.entry_headers.len())
     }
 
     /// Scans the archive and jumps to the entry at the given index.  Returns
     /// an error if the index is not less than the result of `count_entries()`.
     pub fn jump_to_entry(&mut self, index: usize) -> io::Result<Entry<R>> {
-        try!(self.scan_if_necessary());
+        self.scan_if_necessary()?;
         if index >= self.entry_headers.len() {
             let msg = "Entry index out of bounds";
             return Err(Error::new(ErrorKind::InvalidInput, msg));
         }
         if index != self.next_entry_index {
             let offset = self.entry_headers[index].data_start;
-            try!(self.reader.seek(SeekFrom::Start(offset)));
+            self.reader.seek(SeekFrom::Start(offset))?;
         }
         let header = &self.entry_headers[index].header;
         let size = header.size();
@@ -665,29 +658,28 @@ impl<R: Read + Seek> Archive<R> {
     }
 
     fn parse_symbol_table_if_necessary(&mut self) -> io::Result<()> {
-        try!(self.scan_if_necessary());
+        self.scan_if_necessary()?;
         if self.symbol_table.is_some() {
             return Ok(());
         }
         if let Some(ref header_and_loc) = self.symbol_table_header {
             let offset = header_and_loc.data_start;
-            try!(self.reader.seek(SeekFrom::Start(offset)));
+            self.reader.seek(SeekFrom::Start(offset))?;
             let mut reader = BufReader::new(self.reader.by_ref().take(
                 header_and_loc.header.size(),
             ));
             if self.variant == Variant::GNU {
-                let num_symbols = try!(reader.read_u32::<BigEndian>()) as
-                    usize;
+                let num_symbols = reader.read_u32::<BigEndian>()? as usize;
                 let mut symbol_offsets =
                     Vec::<u32>::with_capacity(num_symbols);
                 for _ in 0..num_symbols {
-                    let offset = try!(reader.read_u32::<BigEndian>());
+                    let offset = reader.read_u32::<BigEndian>()?;
                     symbol_offsets.push(offset);
                 }
                 let mut symbol_table = Vec::with_capacity(num_symbols);
                 for offset in symbol_offsets.into_iter() {
                     let mut buffer = Vec::<u8>::new();
-                    try!(reader.read_until(0, &mut buffer));
+                    reader.read_until(0, &mut buffer)?;
                     if buffer.last() == Some(&0) {
                         buffer.pop();
                     }
@@ -696,20 +688,20 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 self.symbol_table = Some(symbol_table);
             } else {
-                let num_symbols =
-                    (try!(reader.read_u32::<LittleEndian>()) / 8) as usize;
+                let num_symbols = (reader.read_u32::<LittleEndian>()? / 8) as
+                    usize;
                 let mut symbol_offsets =
                     Vec::<(u32, u32)>::with_capacity(num_symbols);
                 for _ in 0..num_symbols {
-                    let str_offset = try!(reader.read_u32::<LittleEndian>());
-                    let file_offset = try!(reader.read_u32::<LittleEndian>());
+                    let str_offset = reader.read_u32::<LittleEndian>()?;
+                    let file_offset = reader.read_u32::<LittleEndian>()?;
                     symbol_offsets.push((str_offset, file_offset));
                 }
-                let str_table_len = try!(reader.read_u32::<LittleEndian>());
+                let str_table_len = reader.read_u32::<LittleEndian>()?;
                 let mut str_table_data = vec![0u8; str_table_len as usize];
-                try!(reader.read_exact(&mut str_table_data).map_err(|err| {
+                reader.read_exact(&mut str_table_data).map_err(|err| {
                     annotate(err, "failed to read string table")
-                }));
+                })?;
                 let mut symbol_table = Vec::with_capacity(num_symbols);
                 for (str_start, file_offset) in symbol_offsets.into_iter() {
                     let str_start = str_start as usize;
@@ -729,7 +721,7 @@ impl<R: Read + Seek> Archive<R> {
         if self.entry_headers.len() > 0 {
             let offset = self.entry_headers[self.next_entry_index]
                 .header_start;
-            try!(self.reader.seek(SeekFrom::Start(offset)));
+            self.reader.seek(SeekFrom::Start(offset))?;
         }
         Ok(())
     }
@@ -739,7 +731,7 @@ impl<R: Read + Seek> Archive<R> {
     /// this method will still succeed, but the iterator won't produce any
     /// values.
     pub fn symbols(&mut self) -> io::Result<Symbols<R>> {
-        try!(self.parse_symbol_table_if_necessary());
+        self.parse_symbol_table_if_necessary()?;
         Ok(Symbols {
             archive: self,
             index: 0,
@@ -774,7 +766,7 @@ impl<'a, R: 'a + Read> Read for Entry<'a, R> {
         }
         let max_len =
             cmp::min(self.length - self.position, buf.len() as u64) as usize;
-        let bytes_read = try!(self.reader.read(&mut buf[0..max_len]));
+        let bytes_read = self.reader.read(&mut buf[0..max_len])?;
         self.position += bytes_read as u64;
         debug_assert!(self.position <= self.length);
         Ok(bytes_read)
@@ -807,7 +799,7 @@ impl<'a, R: 'a + Read + Seek> Seek for Entry<'a, R> {
             );
             return Err(Error::new(ErrorKind::InvalidInput, msg));
         }
-        try!(self.reader.seek(SeekFrom::Current(delta)));
+        self.reader.seek(SeekFrom::Current(delta))?;
         self.position = new_position;
         Ok(self.position)
     }
@@ -885,11 +877,11 @@ impl<W: Write> Builder<W> {
     pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
         -> Result<()> {
         if !self.started {
-            try!(self.writer.write_all(GLOBAL_HEADER));
+            self.writer.write_all(GLOBAL_HEADER)?;
             self.started = true;
         }
-        try!(header.write(&mut self.writer));
-        let actual_size = try!(io::copy(&mut data, &mut self.writer));
+        header.write(&mut self.writer)?;
+        let actual_size = io::copy(&mut data, &mut self.writer)?;
         if actual_size != header.size() {
             let msg = format!(
                 "Wrong file size (header.size() = {}, actual \
@@ -900,7 +892,7 @@ impl<W: Write> Builder<W> {
             return Err(Error::new(ErrorKind::InvalidData, msg));
         }
         if actual_size % 2 != 0 {
-            try!(self.writer.write_all(&['\n' as u8]));
+            self.writer.write_all(&['\n' as u8])?;
         }
         Ok(())
     }
@@ -908,12 +900,12 @@ impl<W: Write> Builder<W> {
     /// Adds a file on the local filesystem to this archive, using the file
     /// name as its identifier.
     pub fn append_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let name: &OsStr = try!(path.as_ref().file_name().ok_or_else(|| {
+        let name: &OsStr = path.as_ref().file_name().ok_or_else(|| {
             let msg = "Given path doesn't have a file name";
             Error::new(ErrorKind::InvalidInput, msg)
-        }));
-        let identifier = try!(osstr_to_bytes(name));
-        let mut file = try!(File::open(&path));
+        })?;
+        let identifier = osstr_to_bytes(name)?;
+        let mut file = File::open(&path)?;
         self.append_file_id(identifier, &mut file)
     }
 
@@ -923,7 +915,7 @@ impl<W: Write> Builder<W> {
     }
 
     fn append_file_id(&mut self, id: Vec<u8>, file: &mut File) -> Result<()> {
-        let metadata = try!(file.metadata());
+        let metadata = file.metadata()?;
         let header = Header::from_metadata(id, &metadata);
         self.append(&header, file)
     }
@@ -947,9 +939,9 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 
 #[cfg(not(any(unix, windows)))]
 fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
-    let utf8: &str = try!(string.to_str().ok_or_else(|| {
+    let utf8: &str = string.to_str().ok_or_else(|| {
         Error::new(ErrorKind::InvalidData, "Non-UTF8 file name")
-    }));
+    })?;
     Ok(utf8.as_bytes().to_vec())
 }
 
