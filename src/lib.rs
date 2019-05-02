@@ -960,6 +960,7 @@ pub struct GnuBuilder<W: Write> {
     short_names: HashSet<Vec<u8>>,
     long_names: HashMap<Vec<u8>, usize>,
     name_table_size: usize,
+    name_table_needs_padding: bool,
     started: bool,
 }
 
@@ -981,11 +982,17 @@ impl<W: Write> GnuBuilder<W> {
                 short_names.insert(identifier);
             }
         }
+        let name_table_needs_padding = name_table_size % 2 != 0;
+        if name_table_needs_padding {
+            name_table_size += 3; // ` /\n`
+        }
+
         GnuBuilder {
             writer,
             short_names,
             long_names,
             name_table_size,
+            name_table_needs_padding,
             started: false,
         }
     }
@@ -1028,6 +1035,9 @@ impl<W: Write> GnuBuilder<W> {
                 for (_, id) in entries {
                     self.writer.write_all(id)?;
                     self.writer.write_all(b"/\n")?;
+                }
+                if self.name_table_needs_padding {
+                    self.writer.write_all(b" /\n")?;
                 }
             }
             self.started = true;
@@ -1966,6 +1976,27 @@ mod tests {
         let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
         assert_eq!(symbols, expected);
+    }
+
+    #[test]
+    fn non_multiple_of_two_long_ident_in_gnu_archive() {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+
+        {
+            let filenames = vec![b"rust.metadata.bin".to_vec(), b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o".to_vec()];
+            let mut builder = GnuBuilder::new(&mut buffer, filenames.clone());
+
+            for filename in filenames {
+                builder.append(&Header::new(filename, 1), &mut (&[b'?'] as &[u8])).expect("add file");
+            }
+        }
+
+        buffer.set_position(0);
+
+        let mut archive = Archive::new(buffer);
+        while let Some(entry) = archive.next_entry() {
+            entry.unwrap();
+        }
     }
 }
 
