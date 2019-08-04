@@ -66,9 +66,6 @@
 
 #![warn(missing_docs)]
 
-extern crate byteorder;
-
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -86,6 +83,18 @@ use std::os::unix::ffi::OsStrExt;
 
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
+
+// ========================================================================= //
+
+fn read_le_u32(r: &mut impl io::Read) -> io::Result<u32> {
+    let mut buf = [0; 4];
+    r.read_exact(&mut buf).map(|()| u32::from_le_bytes(buf))
+}
+
+fn read_be_u32(r: &mut impl io::Read) -> io::Result<u32> {
+    let mut buf = [0; 4];
+    r.read_exact(&mut buf).map(|()| u32::from_be_bytes(buf))
+}
 
 // ========================================================================= //
 
@@ -695,11 +704,11 @@ impl<R: Read + Seek> Archive<R> {
                 header_and_loc.header.size(),
             ));
             if self.variant == Variant::GNU {
-                let num_symbols = reader.read_u32::<BigEndian>()? as usize;
+                let num_symbols = read_be_u32(&mut reader)? as usize;
                 let mut symbol_offsets =
                     Vec::<u32>::with_capacity(num_symbols);
                 for _ in 0..num_symbols {
-                    let offset = reader.read_u32::<BigEndian>()?;
+                    let offset = read_be_u32(&mut reader)?;
                     symbol_offsets.push(offset);
                 }
                 let mut symbol_table = Vec::with_capacity(num_symbols);
@@ -714,16 +723,16 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 self.symbol_table = Some(symbol_table);
             } else {
-                let num_symbols = (reader.read_u32::<LittleEndian>()? / 8) as
+                let num_symbols = (read_le_u32(&mut reader)? / 8) as
                     usize;
                 let mut symbol_offsets =
                     Vec::<(u32, u32)>::with_capacity(num_symbols);
                 for _ in 0..num_symbols {
-                    let str_offset = reader.read_u32::<LittleEndian>()?;
-                    let file_offset = reader.read_u32::<LittleEndian>()?;
+                    let str_offset = read_le_u32(&mut reader)?;
+                    let file_offset = read_le_u32(&mut reader)?;
                     symbol_offsets.push((str_offset, file_offset));
                 }
-                let str_table_len = reader.read_u32::<LittleEndian>()?;
+                let str_table_len = read_le_u32(&mut reader)?;
                 let mut str_table_data = vec![0u8; str_table_len as usize];
                 reader.read_exact(&mut str_table_data).map_err(|err| {
                     annotate(err, "failed to read string table")
