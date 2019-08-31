@@ -125,6 +125,7 @@ pub enum Variant {
 // ========================================================================= //
 
 /// Representation of an archive entry header.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Header {
     identifier: Vec<u8>,
     mtime: u64,
@@ -674,14 +675,14 @@ impl<R: Read + Seek> Archive<R> {
             let msg = "Entry index out of bounds";
             return Err(Error::new(ErrorKind::InvalidInput, msg));
         }
-        if index != self.next_entry_index {
-            let offset = self.entry_headers[index].data_start;
-            self.reader.seek(SeekFrom::Start(offset))?;
-        }
+        let offset = self.entry_headers[index].data_start;
+        self.reader.seek(SeekFrom::Start(offset))?;
         let header = &self.entry_headers[index].header;
         let size = header.size();
         if size % 2 != 0 {
             self.padding = true;
+        } else {
+            self.padding = false;
         }
         self.next_entry_index = index + 1;
         Ok(Entry {
@@ -1854,6 +1855,25 @@ mod tests {
         }
         // We should be at the end of the archive now.
         assert!(archive.next_entry().is_none());
+        {
+            // Jump back to the first entry and check its contents.
+            let mut entry = archive.jump_to_entry(0).unwrap();
+            assert_eq!(entry.header().identifier(), "hello.txt".as_bytes());
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "Hello, world!\n".as_bytes());
+        }
+        {
+            // Read the next entry, which should be the second one again.
+            let mut entry = archive.jump_to_entry(1).unwrap();
+            assert_eq!(
+                entry.header().identifier(),
+                "this_is_a_very_long_filename.txt".as_bytes()
+            );
+            let mut buffer = Vec::new();
+            entry.read_to_end(&mut buffer).unwrap();
+            assert_eq!(&buffer as &[u8], "foobar\n".as_bytes());
+        }
         {
             // Jump back to the first entry and check its contents.
             let mut entry = archive.jump_to_entry(0).unwrap();
