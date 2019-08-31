@@ -125,6 +125,7 @@ pub enum Variant {
 // ========================================================================= //
 
 /// Representation of an archive entry header.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Header {
     identifier: Vec<u8>,
     mtime: u64,
