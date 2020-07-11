@@ -619,7 +619,6 @@ impl<'a, R: 'a + Read> Drop for Entry<'a, R> {
 
 // ========================================================================= //
 
-
 /// An entry in the symbol table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolTableEntry {

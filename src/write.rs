@@ -83,9 +83,7 @@ impl<W: Write> Builder<W> {
     /// destination of all data written.
     pub fn new(mut writer: W) -> Result<Builder<W>> {
         writer.write_all(GLOBAL_HEADER)?;
-        Ok(Builder {
-            writer,
-        })
+        Ok(Builder { writer })
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
@@ -156,7 +154,10 @@ impl<W: Write> GnuBuilder<W> {
     /// destination of all data written.  The `identifiers` parameter must give
     /// the complete list of entry identifiers that will be included in this
     /// archive.
-    pub fn new(mut writer: W, identifiers: Vec<Vec<u8>>) -> Result<GnuBuilder<W>> {
+    pub fn new(
+        mut writer: W,
+        identifiers: Vec<Vec<u8>>,
+    ) -> Result<GnuBuilder<W>> {
         let mut short_names = HashSet::<Vec<u8>>::new();
         let mut long_names = HashMap::<Vec<u8>, usize>::new();
         let mut name_table_size: usize = 0;
