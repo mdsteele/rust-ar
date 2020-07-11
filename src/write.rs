@@ -266,25 +266,6 @@ impl<W: Write + Seek> GnuBuilder<W> {
         }
 
         writer.write_all(GLOBAL_HEADER)?;
-        if !long_names.is_empty() {
-            write!(
-                writer,
-                "{:<48}{:<10}`\n",
-                GNU_NAME_TABLE_ID, name_table_size
-            )?;
-            let mut entries: Vec<(usize, &[u8])> = long_names
-                .iter()
-                .map(|(id, &start)| (start, id.as_slice()))
-                .collect();
-            entries.sort();
-            for (_, id) in entries {
-                writer.write_all(id)?;
-                writer.write_all(b"/\n")?;
-            }
-            if name_table_needs_padding {
-                writer.write_all(b" /\n")?;
-            }
-        }
 
         let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
             HashMap::with_capacity(symbol_table.len());
@@ -338,6 +319,26 @@ impl<W: Write + Seek> GnuBuilder<W> {
                 writer.write_all(b"\0")?;
             }
             if symbol_table_needs_padding {
+                writer.write_all(b" /\n")?;
+            }
+        }
+
+        if !long_names.is_empty() {
+            write!(
+                writer,
+                "{:<48}{:<10}`\n",
+                GNU_NAME_TABLE_ID, name_table_size
+            )?;
+            let mut entries: Vec<(usize, &[u8])> = long_names
+                .iter()
+                .map(|(id, &start)| (start, id.as_slice()))
+                .collect();
+            entries.sort();
+            for (_, id) in entries {
+                writer.write_all(id)?;
+                writer.write_all(b"/\n")?;
+            }
+            if name_table_needs_padding {
                 writer.write_all(b" /\n")?;
             }
         }
