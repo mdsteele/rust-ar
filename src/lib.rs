@@ -84,11 +84,11 @@ const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const ENTRY_HEADER_LEN: usize = 60;
 
-const BSD_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"__.SYMDEF";
-const BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"__.SYMDEF SORTED";
+const BSD_SYMBOL_LOOKUP_TABLE_ID: &str = "__.SYMDEF";
+const BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID: &str = "__.SYMDEF SORTED";
 
 const GNU_NAME_TABLE_ID: &str = "//";
-const GNU_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"/";
+const GNU_SYMBOL_LOOKUP_TABLE_ID: &str = "/";
 
 // ========================================================================= //
 

@@ -31,6 +31,7 @@ impl Header {
     where
         R: Read,
     {
+        // Read header
         let mut buffer = [0; 60];
         let bytes_read = reader.read(&mut buffer)?;
         if bytes_read == 0 {
@@ -47,18 +48,25 @@ impl Header {
                 }
             }
         }
+
+        // Parse identifier and size
         let mut identifier = buffer[0..16].to_vec();
         while identifier.last() == Some(&b' ') {
             identifier.pop();
         }
         let mut size = parse_number("file size", &buffer[48..58], 10)?;
         let mut header_len = ENTRY_HEADER_LEN as u64;
+
+        // Parse GNU style special identifiers
         if *variant != Variant::BSD && identifier.starts_with(b"/") {
             *variant = Variant::GNU;
-            if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID {
+            if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes() {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             } else if identifier == GNU_NAME_TABLE_ID.as_bytes() {
+                if !name_table.is_empty() {
+                    return Err(io::Error::new(ErrorKind::InvalidData, "found duplicate name table"));
+                }
                 *name_table = vec![0; size as usize];
                 reader.read_exact(name_table as &mut [u8]).map_err(|err| {
                     annotate(err, "failed to read name table")
@@ -79,6 +87,8 @@ impl Header {
             *variant = Variant::GNU;
             identifier.pop();
         }
+
+        // Parse misc fields
         let mtime = parse_number("timestamp", &buffer[16..28], 10)?;
         let uid = if *variant == Variant::GNU {
             parse_number_permitting_empty("owner ID", &buffer[28..34], 10)?
@@ -91,6 +101,8 @@ impl Header {
             parse_number("group ID", &buffer[34..40], 10)?
         } as u32;
         let mode = parse_number("file mode", &buffer[40..48], 8)? as u32;
+
+        // Parse BSD style special identifiers
         if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
             *variant = Variant::BSD;
             let padded_length =
@@ -125,8 +137,8 @@ impl Header {
                 id_buffer.pop();
             }
             identifier = id_buffer;
-            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID
-                || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+                || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
             {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
@@ -251,10 +263,10 @@ impl<R: Read> Archive<R> {
         match self.variant {
             Variant::Common => false,
             Variant::BSD => {
-                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID
-                    || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+                    || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
             }
-            Variant::GNU => identifier == GNU_SYMBOL_LOOKUP_TABLE_ID,
+            Variant::GNU => identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes(),
         }
     }
 
