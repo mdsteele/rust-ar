@@ -76,17 +76,16 @@ impl Header {
 /// arbitrary writer.
 pub struct Builder<W: Write> {
     writer: W,
-    started: bool,
 }
 
 impl<W: Write> Builder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
-    pub fn new(writer: W) -> Builder<W> {
-        Builder {
+    pub fn new(mut writer: W) -> Result<Builder<W>> {
+        writer.write_all(GLOBAL_HEADER)?;
+        Ok(Builder {
             writer,
-            started: false,
-        }
+        })
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
@@ -98,10 +97,6 @@ impl<W: Write> Builder<W> {
         header: &Header,
         mut data: R,
     ) -> Result<()> {
-        if !self.started {
-            self.writer.write_all(GLOBAL_HEADER)?;
-            self.started = true;
-        }
         header.write(&mut self.writer)?;
         let actual_size = io::copy(&mut data, &mut self.writer)?;
         if actual_size != header.size() {
@@ -154,9 +149,6 @@ pub struct GnuBuilder<W: Write> {
     writer: W,
     short_names: HashSet<Vec<u8>>,
     long_names: HashMap<Vec<u8>, usize>,
-    name_table_size: usize,
-    name_table_needs_padding: bool,
-    started: bool,
 }
 
 impl<W: Write> GnuBuilder<W> {
@@ -164,7 +156,7 @@ impl<W: Write> GnuBuilder<W> {
     /// destination of all data written.  The `identifiers` parameter must give
     /// the complete list of entry identifiers that will be included in this
     /// archive.
-    pub fn new(writer: W, identifiers: Vec<Vec<u8>>) -> GnuBuilder<W> {
+    pub fn new(mut writer: W, identifiers: Vec<Vec<u8>>) -> Result<GnuBuilder<W>> {
         let mut short_names = HashSet::<Vec<u8>>::new();
         let mut long_names = HashMap::<Vec<u8>, usize>::new();
         let mut name_table_size: usize = 0;
@@ -182,14 +174,32 @@ impl<W: Write> GnuBuilder<W> {
             name_table_size += 3; // ` /\n`
         }
 
-        GnuBuilder {
+        writer.write_all(GLOBAL_HEADER)?;
+        if !long_names.is_empty() {
+            write!(
+                writer,
+                "{:<48}{:<10}`\n",
+                GNU_NAME_TABLE_ID, name_table_size
+            )?;
+            let mut entries: Vec<(usize, &[u8])> = long_names
+                .iter()
+                .map(|(id, &start)| (start, id.as_slice()))
+                .collect();
+            entries.sort();
+            for (_, id) in entries {
+                writer.write_all(id)?;
+                writer.write_all(b"/\n")?;
+            }
+            if name_table_needs_padding {
+                writer.write_all(b" /\n")?;
+            }
+        }
+
+        Ok(GnuBuilder {
             writer,
             short_names,
             long_names,
-            name_table_size,
-            name_table_needs_padding,
-            started: false,
-        }
+        })
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
@@ -214,31 +224,6 @@ impl<W: Write> GnuBuilder<W> {
                 String::from_utf8_lossy(header.identifier())
             );
             return Err(Error::new(ErrorKind::InvalidInput, msg));
-        }
-
-        if !self.started {
-            self.writer.write_all(GLOBAL_HEADER)?;
-            if !self.long_names.is_empty() {
-                write!(
-                    self.writer,
-                    "{:<48}{:<10}`\n",
-                    GNU_NAME_TABLE_ID, self.name_table_size
-                )?;
-                let mut entries: Vec<(usize, &[u8])> = self
-                    .long_names
-                    .iter()
-                    .map(|(id, &start)| (start, id.as_slice()))
-                    .collect();
-                entries.sort();
-                for (_, id) in entries {
-                    self.writer.write_all(id)?;
-                    self.writer.write_all(b"/\n")?;
-                }
-                if self.name_table_needs_padding {
-                    self.writer.write_all(b" /\n")?;
-                }
-            }
-            self.started = true;
         }
 
         header.write_gnu(&mut self.writer, &self.long_names)?;
