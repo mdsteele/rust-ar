@@ -688,9 +688,8 @@ fn annotate(error: io::Error, msg: &str) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Archive, Header, Variant};
+    use super::{Archive, Variant};
     use std::io::{Cursor, Read, Result, Seek, SeekFrom};
-    use std::str;
 
     struct SlowReader<'a> {
         current_position: usize,
@@ -1378,7 +1377,7 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::BSD);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
+        let symbols = archive.symbols().unwrap().map(|sym| &*sym.symbol_name).collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
         assert_eq!(symbols, expected);
     }
@@ -1398,7 +1397,7 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::BSD);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
+        let symbols = archive.symbols().unwrap().map(|sym| &*sym.symbol_name).collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"baz", b"foobar", b"quux"];
         assert_eq!(symbols, expected);
     }
@@ -1415,7 +1414,7 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::GNU);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
+        let symbols = archive.symbols().unwrap().map(|sym| &*sym.symbol_name).collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
         assert_eq!(symbols, expected);
     }

@@ -299,8 +299,8 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Archive, Builder, GnuBuilder, Header, Variant};
-    use std::io::{Cursor, Read, Result, Seek, SeekFrom};
+    use super::{Archive, Builder, GnuBuilder, Header};
+    use std::io::{Read, Result};
     use std::str;
 
     struct SlowReader<'a> {
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn build_common_archive() {
-        let mut builder = Builder::new(Vec::new());
+        let mut builder = Builder::new(Vec::new()).unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_long_filenames() {
-        let mut builder = Builder::new(Vec::new());
+        let mut builder = Builder::new(Vec::new()).unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_space_in_filename() {
-        let mut builder = Builder::new(Vec::new());
+        let mut builder = Builder::new(Vec::new()).unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap();
@@ -382,7 +382,7 @@ mod tests {
     #[test]
     fn build_gnu_archive() {
         let names = vec![b"baz.txt".to_vec(), b"foo.txt".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
+        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -407,7 +407,7 @@ mod tests {
             b"this_is_a_very_long_filename.txt".to_vec(),
             b"and_this_is_another_very_long_filename.txt".to_vec(),
         ];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
+        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -437,7 +437,7 @@ mod tests {
     #[test]
     fn build_gnu_archive_with_space_in_filename() {
         let names = vec![b"foo bar".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
+        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap();
@@ -455,7 +455,7 @@ mod tests {
     )]
     fn build_gnu_archive_with_unexpected_identifier() {
         let names = vec![b"foo".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
+        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
         let header = Header::new(b"bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
     }
@@ -470,7 +470,7 @@ mod tests {
                 b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o"
                     .to_vec(),
             ];
-            let mut builder = GnuBuilder::new(&mut buffer, filenames.clone());
+            let mut builder = GnuBuilder::new(&mut buffer, filenames.clone()).unwrap();
 
             for filename in filenames {
                 builder

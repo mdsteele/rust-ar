@@ -30,7 +30,7 @@ fn main() {
     let output_path = Path::new(&output_path);
     let output_file =
         File::create(output_path).expect("failed to open output file");
-    let mut builder = ar::Builder::new(output_file);
+    let mut builder = ar::Builder::new(output_file).unwrap();
 
     for index in 2..num_args {
         let input_path = env::args().nth(index).unwrap();
