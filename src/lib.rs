@@ -32,9 +32,10 @@
 //!
 //! ```no_run
 //! use ar::Builder;
+//! use std::collections::BTreeMap;
 //! use std::fs::File;
 //! // Create a new archive that will be written to foo.a:
-//! let mut builder = Builder::new(File::create("foo.a").unwrap()).unwrap();
+//! let mut builder = Builder::new(File::create("foo.a").unwrap(), BTreeMap::new()).unwrap();
 //! // Add foo/bar.txt to the archive, under the name "bar.txt":
 //! builder.append_path("foo/bar.txt").unwrap();
 //! // Add foo/baz.txt to the archive, under the name "hello.txt":

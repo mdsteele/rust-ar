@@ -75,16 +75,88 @@ impl Header {
 ///
 /// This structure has methods for building up an archive from scratch into any
 /// arbitrary writer.
-pub struct Builder<W: Write> {
+pub struct Builder<W: Write + Seek> {
     writer: W,
+    symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>>,
 }
 
-impl<W: Write> Builder<W> {
+impl<W: Write + Seek> Builder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
-    pub fn new(mut writer: W) -> Result<Builder<W>> {
+    pub fn new(mut writer: W, symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>) -> Result<Builder<W>> {
         writer.write_all(GLOBAL_HEADER)?;
-        Ok(Builder { writer })
+
+        let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
+            HashMap::with_capacity(symbol_table.len());
+        if !symbol_table.is_empty() {
+            let symbol_count: usize = symbol_table
+                .iter()
+                .map(|(_identifier, symbols)| symbols.len())
+                .sum();
+            let total_symbol_size: usize = symbol_table
+                .iter()
+                .flat_map(|(_identifier, symbols)| symbols)
+                .map(|symbol| symbol.len() + 1)
+                .sum::<usize>();
+            let mut symbol_table_size: usize = 4 + 8 * symbol_count + 4 + total_symbol_size;
+            let symbol_table_needs_padding = symbol_table_size % 2 != 0;
+            if symbol_table_needs_padding {
+                symbol_table_size += 3; // ` /\n`
+            }
+            write!(writer, "#1/12           0           0     0     0       {:<10}`\n", symbol_table_size + 12)?;
+            writer.write_all(&*b"__.SYMDEF\0\0\0")?;
+            writer.write_all(&u32::to_le_bytes(
+                8 * u32::try_from(symbol_count).map_err(|_| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "More than 4 billion symbols??? There are {}",
+                            symbol_count
+                        ),
+                    )
+                })?,
+            ))?;
+            let mut str_offset = 0;
+            for (identifier, symbol) in
+                symbol_table.iter().flat_map(|(identifier, symbols)| {
+                    symbols.iter().map(move |symbol| (identifier, symbol))
+                })
+            {
+                writer.write_all(&u32::to_le_bytes(str_offset))?;
+                str_offset += symbol.len() as u32 + 1;
+                symbol_table_relocations
+                    .entry(identifier.clone())
+                    .or_default()
+                    .push(writer.seek(io::SeekFrom::Current(0))?);
+                writer.write_all(&u32::to_le_bytes(0xcafebabe))?;
+            }
+            writer.write_all(&u32::to_le_bytes(
+                u32::try_from(total_symbol_size).map_err(|_| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "More than 4GB of symbol strings??? There are 0x{:x} bytes",
+                            total_symbol_size
+                        ),
+                    )
+                })?,
+            ))?;
+            for symbol in symbol_table
+                .iter()
+                .flat_map(|(_identifier, symbols)| symbols)
+            {
+                writer.write_all(symbol)?;
+                writer.write_all(&[0])?;
+            }
+            if symbol_table_needs_padding {
+                writer.write_all(b" /\n")?;
+            }
+        }
+
+        Ok(Builder {
+            writer,
+            symbol_table_relocations,
+        })
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
@@ -96,6 +168,21 @@ impl<W: Write> Builder<W> {
         header: &Header,
         mut data: R,
     ) -> Result<()> {
+        if let Some(relocs) =
+            self.symbol_table_relocations.get(header.identifier())
+        {
+            let entry_offset = self.writer.seek(io::SeekFrom::Current(0))?;
+            let entry_offset_bytes = u32::to_le_bytes(
+                u32::try_from(entry_offset)
+                    .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("Archive is bigger than 4GB. It is already 0x{:x} bytes.", entry_offset)))?
+            );
+            for &reloc_offset in relocs {
+                self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
+                self.writer.write_all(&entry_offset_bytes)?;
+            }
+            self.writer.seek(io::SeekFrom::Start(entry_offset))?;
+        }
+
         header.write(&mut self.writer)?;
         let actual_size = io::copy(&mut data, &mut self.writer)?;
         if actual_size != header.size() {
@@ -381,7 +468,7 @@ mod tests {
 
     #[test]
     fn build_common_archive() {
-        let mut builder = Builder::new(Cursor::new(Vec::new())).unwrap();
+        let mut builder = Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -402,7 +489,7 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_long_filenames() {
-        let mut builder = Builder::new(Cursor::new(Vec::new())).unwrap();
+        let mut builder = Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -428,7 +515,7 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_space_in_filename() {
-        let mut builder = Builder::new(Cursor::new(Vec::new())).unwrap();
+        let mut builder = Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap().into_inner();
@@ -584,7 +671,9 @@ mod tests {
         let actual = builder.into_inner().unwrap().into_inner();
         let expected = "!<arch>\n\
         /                                               32        `\n\
-        \0\0\0\u{3}\0\0\0d\0\0\0d\0\0\0�bar\0bazz\0aaa\0 /\n\
+        \0\0\0\x03\
+        \0\0\0d\0\0\0d\0\0\0�\
+        bar\0bazz\0aaa\0 /\n\
         foo/            0           0     0     0       1         `\n\
         ?\n\
         foobar/         0           0     0     0       1         `\n\
@@ -609,6 +698,65 @@ mod tests {
                 &SymbolTableEntry {
                     symbol_name: b"aaa".to_vec(),
                     file_offset: 162,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn build_bsd_archive_with_symbol_table() {
+        let mut symbol_table = BTreeMap::new();
+        symbol_table
+            .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
+        symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
+        let mut builder = Builder::new(
+            Cursor::new(Vec::new()),
+            symbol_table,
+        )
+        .unwrap();
+        builder
+            .append(&Header::new(b"foo".to_vec(), 1), &mut (&[b'?'] as &[u8]))
+            .expect("add file");
+        builder
+            .append(
+                &Header::new(b"foobar".to_vec(), 1),
+                &mut (&[b'!'] as &[u8]),
+            )
+            .expect("add file");
+        let actual = builder.into_inner().unwrap().into_inner();
+        let expected = "!<arch>\n\
+        #1/12           0           0     0     0       60        `\n\
+        __.SYMDEF\0\0\0\
+        \x18\0\0\0\
+        \x00\0\0\0�\0\0\0\
+        \x04\0\0\0�\0\0\0\
+        \x09\0\0\0�\0\0\0\
+        \x0D\0\0\0\
+        bar\0bazz\0aaa\0 /\n\
+        foo             0           0     0     0       1         `\n\
+        ?\n\
+        foobar          0           0     0     0       1         `\n\
+        !\n";
+        assert_eq!(String::from_utf8_lossy(&actual), expected);
+
+        let mut archive = Archive::new(Cursor::new(actual));
+        assert_eq!(
+            archive
+                .symbols()
+                .unwrap()
+                .collect::<Vec<&SymbolTableEntry>>(),
+            vec![
+                &SymbolTableEntry {
+                    symbol_name: b"bar".to_vec(),
+                    file_offset: 128,
+                },
+                &SymbolTableEntry {
+                    symbol_name: b"bazz".to_vec(),
+                    file_offset: 128,
+                },
+                &SymbolTableEntry {
+                    symbol_name: b"aaa".to_vec(),
+                    file_offset: 190,
                 },
             ]
         );
