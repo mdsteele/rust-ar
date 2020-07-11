@@ -204,7 +204,7 @@ pub struct Archive<R: Read> {
     new_entry_start: u64,
     next_entry_index: usize,
     symbol_table_header: Option<HeaderAndLocation>,
-    symbol_table: Option<Vec<(Vec<u8>, u64)>>,
+    symbol_table: Option<Vec<SymbolTableEntry>>,
     started: bool, // True if we've read past the global header.
     padding: bool, // True if there's a padding byte before the next entry.
     scanned: bool, // True if entry_headers is complete.
@@ -476,13 +476,16 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 let mut symbol_table = Vec::with_capacity(num_symbols);
                 for offset in symbol_offsets.into_iter() {
-                    let mut buffer = Vec::<u8>::new();
-                    reader.read_until(0, &mut buffer)?;
-                    if buffer.last() == Some(&0) {
-                        buffer.pop();
+                    let mut symbol_name = Vec::<u8>::new();
+                    reader.read_until(0, &mut symbol_name)?;
+                    if symbol_name.last() == Some(&0) {
+                        symbol_name.pop();
                     }
-                    buffer.shrink_to_fit();
-                    symbol_table.push((buffer, offset as u64));
+                    symbol_name.shrink_to_fit();
+                    symbol_table.push(SymbolTableEntry {
+                        symbol_name,
+                        file_offset: offset as u64,
+                    });
                 }
                 self.symbol_table = Some(symbol_table);
             } else {
@@ -509,7 +512,10 @@ impl<R: Read + Seek> Archive<R> {
                         str_end += 1;
                     }
                     let string = &str_table_data[str_start..str_end];
-                    symbol_table.push((string.to_vec(), file_offset as u64));
+                    symbol_table.push(SymbolTableEntry {
+                        symbol_name: string.to_vec(),
+                        file_offset: file_offset as u64,
+                    });
                 }
                 self.symbol_table = Some(symbol_table);
             }
@@ -613,6 +619,17 @@ impl<'a, R: 'a + Read> Drop for Entry<'a, R> {
 
 // ========================================================================= //
 
+
+/// An entry in the symbol table.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SymbolTableEntry {
+    /// The name of the symbol.
+    pub symbol_name: Vec<u8>,
+
+    /// The file offset of the object file containing the symbol.
+    pub file_offset: u64,
+}
+
 /// An iterator over the symbols in the symbol table of an archive.
 pub struct Symbols<'a, R: 'a + Read> {
     archive: &'a Archive<R>,
@@ -620,12 +637,12 @@ pub struct Symbols<'a, R: 'a + Read> {
 }
 
 impl<'a, R: Read> Iterator for Symbols<'a, R> {
-    type Item = &'a [u8];
+    type Item = &'a SymbolTableEntry;
 
-    fn next(&mut self) -> Option<&'a [u8]> {
+    fn next(&mut self) -> Option<&'a SymbolTableEntry> {
         if let Some(ref table) = self.archive.symbol_table {
             if self.index < table.len() {
-                let next = table[self.index].0.as_slice();
+                let next = &table[self.index];
                 self.index += 1;
                 return Some(next);
             }

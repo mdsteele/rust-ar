@@ -69,8 +69,8 @@
 mod read;
 mod write;
 
-pub use read::{Archive, Entry, Symbols};
-pub use write::*;
+pub use read::{Archive, Entry, Symbols, SymbolTableEntry};
+pub use write::{Builder, GnuBuilder};
 
 use std::fs::Metadata;
 
