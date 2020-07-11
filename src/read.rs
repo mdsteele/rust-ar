@@ -1,5 +1,7 @@
 use std::cmp;
-use std::io::{self, BufRead, BufReader, Error, ErrorKind, Read, Result, Seek, SeekFrom};
+use std::io::{
+    self, BufRead, BufReader, Error, ErrorKind, Read, Result, Seek, SeekFrom,
+};
 use std::str;
 
 use super::*;
@@ -21,8 +23,11 @@ fn read_be_u32(r: &mut impl io::Read) -> io::Result<u32> {
 impl Header {
     /// Parses and returns the next header and its length.  Returns `Ok(None)`
     /// if we are at EOF.
-    fn read<R>(reader: &mut R, variant: &mut Variant, name_table: &mut Vec<u8>)
-        -> Result<Option<(Header, u64)>>
+    fn read<R>(
+        reader: &mut R,
+        variant: &mut Variant,
+        name_table: &mut Vec<u8>,
+    ) -> Result<Option<(Header, u64)>>
     where
         R: Read,
     {
@@ -60,12 +65,12 @@ impl Header {
                 })?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             }
-            let start =
-                parse_number("GNU filename index", &buffer[1..16], 10)? as
-                    usize;
-            let end = match name_table[start..].iter().position(|&ch| {
-                ch == b'/' || ch == b'\x00'
-            }) {
+            let start = parse_number("GNU filename index", &buffer[1..16], 10)?
+                as usize;
+            let end = match name_table[start..]
+                .iter()
+                .position(|&ch| ch == b'/' || ch == b'\x00')
+            {
                 Some(len) => start + len,
                 None => name_table.len(),
             };
@@ -94,8 +99,7 @@ impl Header {
                 let msg = format!(
                     "Entry size ({}) smaller than extended \
                                    entry identifier length ({})",
-                    size,
-                    padded_length
+                    size, padded_length
                 );
                 return Err(Error::new(ErrorKind::InvalidData, msg));
             }
@@ -104,9 +108,8 @@ impl Header {
             let mut id_buffer = vec![0; padded_length as usize];
             let bytes_read = reader.read(&mut id_buffer)?;
             if bytes_read < id_buffer.len() {
-                if let Err(error) = reader.read_exact(
-                    &mut id_buffer[bytes_read..],
-                )
+                if let Err(error) =
+                    reader.read_exact(&mut id_buffer[bytes_read..])
                 {
                     if error.kind() == ErrorKind::UnexpectedEof {
                         let msg = "unexpected EOF in the middle of extended \
@@ -122,8 +125,8 @@ impl Header {
                 id_buffer.pop();
             }
             identifier = id_buffer;
-            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
-                identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID
+                || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
             {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
@@ -161,8 +164,11 @@ fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
  * Equivalent to parse_number() except for the case of bytes being
  * all spaces (eg all 0x20) as MS tools emit for UID/GID
  */
-fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32)
-    -> Result<u64> {
+fn parse_number_permitting_empty(
+    field_name: &str,
+    bytes: &[u8],
+    radix: u32,
+) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         let trimmed = string.trim_end();
         if trimmed.len() == 0 {
@@ -202,7 +208,7 @@ pub struct Archive<R: Read> {
     started: bool, // True if we've read past the global header.
     padding: bool, // True if there's a padding byte before the next entry.
     scanned: bool, // True if entry_headers is complete.
-    error: bool, // True if we have encountered an error.
+    error: bool,   // True if we have encountered an error.
 }
 
 impl<R: Read> Archive<R> {
@@ -237,16 +243,16 @@ impl<R: Read> Archive<R> {
     pub fn into_inner(self) -> Result<R> { Ok(self.reader) }
 
     fn is_name_table_id(&self, identifier: &[u8]) -> bool {
-        self.variant == Variant::GNU &&
-            identifier == GNU_NAME_TABLE_ID.as_bytes()
+        self.variant == Variant::GNU
+            && identifier == GNU_NAME_TABLE_ID.as_bytes()
     }
 
     fn is_symbol_lookup_table_id(&self, identifier: &[u8]) -> bool {
         match self.variant {
             Variant::Common => false,
             Variant::BSD => {
-                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
-                    identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID
+                    || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
             }
             Variant::GNU => identifier == GNU_SYMBOL_LOOKUP_TABLE_ID,
         }
@@ -280,8 +286,8 @@ impl<R: Read> Archive<R> {
             if self.error {
                 return None;
             }
-            if self.scanned &&
-                self.next_entry_index == self.entry_headers.len()
+            if self.scanned
+                && self.next_entry_index == self.entry_headers.len()
             {
                 return None;
             }
@@ -295,8 +301,10 @@ impl<R: Read> Archive<R> {
                     Ok(()) => {
                         if buffer[0] != b'\n' {
                             self.error = true;
-                            let msg = format!("invalid padding byte ({})",
-                                              buffer[0]);
+                            let msg = format!(
+                                "invalid padding byte ({})",
+                                buffer[0]
+                            );
                             let error =
                                 Error::new(ErrorKind::InvalidData, msg);
                             return Some(Err(error));
@@ -344,8 +352,8 @@ impl<R: Read> Archive<R> {
                             data_start: header_start + header_len,
                         });
                     }
-                    let header = &self.entry_headers[self.next_entry_index]
-                        .header;
+                    let header =
+                        &self.entry_headers[self.next_entry_index].header;
                     self.next_entry_index += 1;
                     return Some(Ok(Entry {
                         header: header,
@@ -376,13 +384,11 @@ impl<R: Read + Seek> Archive<R> {
         loop {
             let header_start = self.new_entry_start;
             self.reader.seek(SeekFrom::Start(header_start))?;
-            if let Some((header, header_len)) =
-                Header::read(
-                    &mut self.reader,
-                    &mut self.variant,
-                    &mut self.name_table,
-                )?
-            {
+            if let Some((header, header_len)) = Header::read(
+                &mut self.reader,
+                &mut self.variant,
+                &mut self.name_table,
+            )? {
                 let size = header.size();
                 self.new_entry_start += header_len + size + (size % 2);
                 if self.is_name_table_id(header.identifier()) {
@@ -407,8 +413,8 @@ impl<R: Read + Seek> Archive<R> {
         }
         // Resume our previous position in the file.
         if self.next_entry_index < self.entry_headers.len() {
-            let offset = self.entry_headers[self.next_entry_index]
-                .header_start;
+            let offset =
+                self.entry_headers[self.next_entry_index].header_start;
             self.reader.seek(SeekFrom::Start(offset))?;
         }
         self.scanned = true;
@@ -457,9 +463,9 @@ impl<R: Read + Seek> Archive<R> {
         if let Some(ref header_and_loc) = self.symbol_table_header {
             let offset = header_and_loc.data_start;
             self.reader.seek(SeekFrom::Start(offset))?;
-            let mut reader = BufReader::new(self.reader.by_ref().take(
-                header_and_loc.header.size(),
-            ));
+            let mut reader = BufReader::new(
+                self.reader.by_ref().take(header_and_loc.header.size()),
+            );
             if self.variant == Variant::GNU {
                 let num_symbols = read_be_u32(&mut reader)? as usize;
                 let mut symbol_offsets =
@@ -480,8 +486,7 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 self.symbol_table = Some(symbol_table);
             } else {
-                let num_symbols = (read_le_u32(&mut reader)? / 8) as
-                    usize;
+                let num_symbols = (read_le_u32(&mut reader)? / 8) as usize;
                 let mut symbol_offsets =
                     Vec::<(u32, u32)>::with_capacity(num_symbols);
                 for _ in 0..num_symbols {
@@ -498,8 +503,8 @@ impl<R: Read + Seek> Archive<R> {
                 for (str_start, file_offset) in symbol_offsets.into_iter() {
                     let str_start = str_start as usize;
                     let mut str_end = str_start;
-                    while str_end < str_table_data.len() &&
-                        str_table_data[str_end] != 0u8
+                    while str_end < str_table_data.len()
+                        && str_table_data[str_end] != 0u8
                     {
                         str_end += 1;
                     }
@@ -511,8 +516,8 @@ impl<R: Read + Seek> Archive<R> {
         }
         // Resume our previous position in the file.
         if self.entry_headers.len() > 0 {
-            let offset = self.entry_headers[self.next_entry_index]
-                .header_start;
+            let offset =
+                self.entry_headers[self.next_entry_index].header_start;
             self.reader.seek(SeekFrom::Start(offset))?;
         }
         Ok(())
@@ -586,8 +591,7 @@ impl<'a, R: 'a + Read + Seek> Seek for Entry<'a, R> {
         if new_position > self.length {
             let msg = format!(
                 "Invalid seek to position past end of entry ({} vs. {})",
-                new_position,
-                self.length
+                new_position, self.length
             );
             return Err(Error::new(ErrorKind::InvalidInput, msg));
         }

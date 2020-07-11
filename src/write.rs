@@ -37,18 +37,17 @@ impl Header {
             write!(
                 writer,
                 "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-                self.mtime,
-                self.uid,
-                self.gid,
-                self.mode,
-                self.size
+                self.mtime, self.uid, self.gid, self.mode, self.size
             )?;
         }
         Ok(())
     }
 
-    fn write_gnu<W>(&self, writer: &mut W, names: &HashMap<Vec<u8>, usize>)
-        -> Result<()>
+    fn write_gnu<W>(
+        &self,
+        writer: &mut W,
+        names: &HashMap<Vec<u8>, usize>,
+    ) -> Result<()>
     where
         W: Write,
     {
@@ -63,11 +62,7 @@ impl Header {
         write!(
             writer,
             "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-            self.mtime,
-            self.uid,
-            self.gid,
-            self.mode,
-            self.size
+            self.mtime, self.uid, self.gid, self.mode, self.size
         )?;
         Ok(())
     }
@@ -98,8 +93,11 @@ impl<W: Write> Builder<W> {
     pub fn into_inner(self) -> Result<W> { Ok(self.writer) }
 
     /// Adds a new entry to this archive.
-    pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-        -> Result<()> {
+    pub fn append<R: Read>(
+        &mut self,
+        header: &Header,
+        mut data: R,
+    ) -> Result<()> {
         if !self.started {
             self.writer.write_all(GLOBAL_HEADER)?;
             self.started = true;
@@ -198,8 +196,11 @@ impl<W: Write> GnuBuilder<W> {
     pub fn into_inner(self) -> Result<W> { Ok(self.writer) }
 
     /// Adds a new entry to this archive.
-    pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-        -> Result<()> {
+    pub fn append<R: Read>(
+        &mut self,
+        header: &Header,
+        mut data: R,
+    ) -> Result<()> {
         let is_long_name = header.identifier().len() > 15;
         let has_name = if is_long_name {
             self.long_names.contains_key(header.identifier())
@@ -221,10 +222,10 @@ impl<W: Write> GnuBuilder<W> {
                 write!(
                     self.writer,
                     "{:<48}{:<10}`\n",
-                    GNU_NAME_TABLE_ID,
-                    self.name_table_size
+                    GNU_NAME_TABLE_ID, self.name_table_size
                 )?;
-                let mut entries: Vec<(usize, &[u8])> = self.long_names
+                let mut entries: Vec<(usize, &[u8])> = self
+                    .long_names
                     .iter()
                     .map(|(id, &start)| (start, id.as_slice()))
                     .collect();
@@ -462,8 +463,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Identifier \\\"bar\\\" was not in the list of \
-                               identifiers passed to GnuBuilder::new()")]
+    #[should_panic(
+        expected = "Identifier \\\"bar\\\" was not in the list of \
+                               identifiers passed to GnuBuilder::new()"
+    )]
     fn build_gnu_archive_with_unexpected_identifier() {
         let names = vec![b"foo".to_vec()];
         let mut builder = GnuBuilder::new(Vec::new(), names);
@@ -476,11 +479,17 @@ mod tests {
         let mut buffer = std::io::Cursor::new(Vec::new());
 
         {
-            let filenames = vec![b"rust.metadata.bin".to_vec(), b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o".to_vec()];
+            let filenames = vec![
+                b"rust.metadata.bin".to_vec(),
+                b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o"
+                    .to_vec(),
+            ];
             let mut builder = GnuBuilder::new(&mut buffer, filenames.clone());
 
             for filename in filenames {
-                builder.append(&Header::new(filename, 1), &mut (&[b'?'] as &[u8])).expect("add file");
+                builder
+                    .append(&Header::new(filename, 1), &mut (&[b'?'] as &[u8]))
+                    .expect("add file");
             }
         }
 
