@@ -65,7 +65,10 @@ impl Header {
                 return Ok(Some((Header::new(identifier, size), header_len)));
             } else if identifier == GNU_NAME_TABLE_ID.as_bytes() {
                 if !name_table.is_empty() {
-                    return Err(io::Error::new(ErrorKind::InvalidData, "found duplicate name table"));
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "found duplicate name table",
+                    ));
                 }
                 *name_table = vec![0; size as usize];
                 reader.read_exact(name_table as &mut [u8]).map_err(|err| {
@@ -264,9 +267,12 @@ impl<R: Read> Archive<R> {
             Variant::Common => false,
             Variant::BSD => {
                 identifier == BSD_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
-                    || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+                    || identifier
+                        == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
             }
-            Variant::GNU => identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes(),
+            Variant::GNU => {
+                identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+            }
         }
     }
 
@@ -1377,7 +1383,11 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::BSD);
-        let symbols = archive.symbols().unwrap().map(|sym| &*sym.symbol_name).collect::<Vec<&[u8]>>();
+        let symbols = archive
+            .symbols()
+            .unwrap()
+            .map(|sym| &*sym.symbol_name)
+            .collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
         assert_eq!(symbols, expected);
     }
@@ -1397,7 +1407,11 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::BSD);
-        let symbols = archive.symbols().unwrap().map(|sym| &*sym.symbol_name).collect::<Vec<&[u8]>>();
+        let symbols = archive
+            .symbols()
+            .unwrap()
+            .map(|sym| &*sym.symbol_name)
+            .collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"baz", b"foobar", b"quux"];
         assert_eq!(symbols, expected);
     }
@@ -1414,7 +1428,11 @@ mod tests {
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
         assert_eq!(archive.variant(), Variant::GNU);
-        let symbols = archive.symbols().unwrap().map(|sym| &*sym.symbol_name).collect::<Vec<&[u8]>>();
+        let symbols = archive
+            .symbols()
+            .unwrap()
+            .map(|sym| &*sym.symbol_name)
+            .collect::<Vec<&[u8]>>();
         let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
         assert_eq!(symbols, expected);
     }

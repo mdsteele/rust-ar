@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::convert::TryFrom;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, Error, ErrorKind, Read, Result, Write};
+use std::io::{self, Error, ErrorKind, Read, Result, Seek, Write};
 use std::path::Path;
 
 #[cfg(unix)]
@@ -143,13 +144,14 @@ impl<W: Write> Builder<W> {
 ///
 /// This structure has methods for building up an archive from scratch into any
 /// arbitrary writer.
-pub struct GnuBuilder<W: Write> {
+pub struct GnuBuilder<W: Write + Seek> {
     writer: W,
     short_names: HashSet<Vec<u8>>,
     long_names: HashMap<Vec<u8>, usize>,
+    symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>>,
 }
 
-impl<W: Write> GnuBuilder<W> {
+impl<W: Write + Seek> GnuBuilder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.  The `identifiers` parameter must give
     /// the complete list of entry identifiers that will be included in this
@@ -157,6 +159,7 @@ impl<W: Write> GnuBuilder<W> {
     pub fn new(
         mut writer: W,
         identifiers: Vec<Vec<u8>>,
+        symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     ) -> Result<GnuBuilder<W>> {
         let mut short_names = HashSet::<Vec<u8>>::new();
         let mut long_names = HashMap::<Vec<u8>, usize>::new();
@@ -196,10 +199,67 @@ impl<W: Write> GnuBuilder<W> {
             }
         }
 
+        let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
+            HashMap::with_capacity(symbol_table.len());
+        if !symbol_table.is_empty() {
+            let symbol_count: usize = symbol_table
+                .iter()
+                .map(|(_identifier, symbols)| symbols.len())
+                .sum();
+            let symbols = symbol_table
+                .iter()
+                .flat_map(|(_identifier, symbols)| symbols);
+            let mut symbol_table_size: usize = 4
+                + 4usize * symbol_count
+                + symbols.map(|symbol| symbol.len() + 1).sum::<usize>();
+            let symbol_table_needs_padding = symbol_table_size % 2 != 0;
+            if symbol_table_needs_padding {
+                symbol_table_size += 3; // ` /\n`
+            }
+            write!(
+                writer,
+                "{:<48}{:<10}`\n",
+                GNU_SYMBOL_LOOKUP_TABLE_ID, symbol_table_size
+            )?;
+            writer.write_all(&u32::to_be_bytes(
+                u32::try_from(symbol_count).map_err(|_| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "More than 4 billion symbols??? There are {}",
+                            symbol_count
+                        ),
+                    )
+                })?,
+            ))?;
+            for identifier in
+                symbol_table.iter().flat_map(|(identifier, symbols)| {
+                    std::iter::repeat(identifier).take(symbols.len())
+                })
+            {
+                symbol_table_relocations
+                    .entry(identifier.clone())
+                    .or_default()
+                    .push(writer.seek(io::SeekFrom::Current(0))?);
+                writer.write_all(&u32::to_be_bytes(0xcafebabe))?;
+            }
+            for symbol in symbol_table
+                .iter()
+                .flat_map(|(_identifier, symbols)| symbols)
+            {
+                writer.write_all(symbol)?;
+                writer.write_all(b"\0")?;
+            }
+            if symbol_table_needs_padding {
+                writer.write_all(b" /\n")?;
+            }
+        }
+
         Ok(GnuBuilder {
             writer,
             short_names,
             long_names,
+            symbol_table_relocations,
         })
     }
 
@@ -225,6 +285,21 @@ impl<W: Write> GnuBuilder<W> {
                 String::from_utf8_lossy(header.identifier())
             );
             return Err(Error::new(ErrorKind::InvalidInput, msg));
+        }
+
+        if let Some(relocs) =
+            self.symbol_table_relocations.get(header.identifier())
+        {
+            let entry_offset = self.writer.seek(io::SeekFrom::Current(0))?;
+            let entry_offset_bytes = u32::to_be_bytes(
+                u32::try_from(entry_offset)
+                    .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("Archive is bigger than 4GB. It is already 0x{:x} bytes.", entry_offset)))?
+            );
+            for &reloc_offset in relocs {
+                self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
+                self.writer.write_all(&entry_offset_bytes)?;
+            }
+            self.writer.seek(io::SeekFrom::Start(entry_offset))?;
         }
 
         header.write_gnu(&mut self.writer, &self.long_names)?;
@@ -299,29 +374,14 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Archive, Builder, GnuBuilder, Header};
-    use std::io::{Read, Result};
+    use super::{Archive, Builder, GnuBuilder, Header, SymbolTableEntry};
+    use std::collections::BTreeMap;
+    use std::io::Cursor;
     use std::str;
-
-    struct SlowReader<'a> {
-        current_position: usize,
-        buffer: &'a [u8],
-    }
-
-    impl<'a> Read for SlowReader<'a> {
-        fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-            if self.current_position >= self.buffer.len() {
-                return Ok(0);
-            }
-            buf[0] = self.buffer[self.current_position];
-            self.current_position += 1;
-            return Ok(1);
-        }
-    }
 
     #[test]
     fn build_common_archive() {
-        let mut builder = Builder::new(Vec::new()).unwrap();
+        let mut builder = Builder::new(Cursor::new(Vec::new())).unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -330,7 +390,7 @@ mod tests {
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
         let header2 = Header::new(b"baz.txt".to_vec(), 4);
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
+        let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
         foo.txt         1487552916  501   20    100644  7         `\n\
@@ -342,7 +402,7 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_long_filenames() {
-        let mut builder = Builder::new(Vec::new()).unwrap();
+        let mut builder = Builder::new(Cursor::new(Vec::new())).unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -356,7 +416,7 @@ mod tests {
             4,
         );
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
+        let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
         #1/32           1487552916  501   20    100644  39        `\n\
@@ -368,10 +428,10 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_space_in_filename() {
-        let mut builder = Builder::new(Vec::new()).unwrap();
+        let mut builder = Builder::new(Cursor::new(Vec::new())).unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
+        let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
         #1/8            0           0     0     0       12        `\n\
@@ -382,7 +442,9 @@ mod tests {
     #[test]
     fn build_gnu_archive() {
         let names = vec![b"baz.txt".to_vec(), b"foo.txt".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
+        let mut builder =
+            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
+                .unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -391,7 +453,7 @@ mod tests {
         builder.append(&header1, "foobar\n".as_bytes()).unwrap();
         let header2 = Header::new(b"baz.txt".to_vec(), 4);
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
+        let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
         foo.txt/        1487552916  501   20    100644  7         `\n\
@@ -407,7 +469,9 @@ mod tests {
             b"this_is_a_very_long_filename.txt".to_vec(),
             b"and_this_is_another_very_long_filename.txt".to_vec(),
         ];
-        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
+        let mut builder =
+            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
+                .unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -421,7 +485,7 @@ mod tests {
             4,
         );
         builder.append(&header2, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
+        let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
         //                                              78        `\n\
@@ -437,10 +501,12 @@ mod tests {
     #[test]
     fn build_gnu_archive_with_space_in_filename() {
         let names = vec![b"foo bar".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
+        let mut builder =
+            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
+                .unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
+        let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
         foo bar/        0           0     0     0       4         `\n\
@@ -455,7 +521,9 @@ mod tests {
     )]
     fn build_gnu_archive_with_unexpected_identifier() {
         let names = vec![b"foo".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names).unwrap();
+        let mut builder =
+            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
+                .unwrap();
         let header = Header::new(b"bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
     }
@@ -470,7 +538,12 @@ mod tests {
                 b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o"
                     .to_vec(),
             ];
-            let mut builder = GnuBuilder::new(&mut buffer, filenames.clone()).unwrap();
+            let mut builder = GnuBuilder::new(
+                &mut buffer,
+                filenames.clone(),
+                BTreeMap::new(),
+            )
+            .unwrap();
 
             for filename in filenames {
                 builder
@@ -485,6 +558,60 @@ mod tests {
         while let Some(entry) = archive.next_entry() {
             entry.unwrap();
         }
+    }
+
+    #[test]
+    fn build_gnu_archive_with_symbol_table() {
+        let mut symbol_table = BTreeMap::new();
+        symbol_table
+            .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
+        symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
+        let mut builder = GnuBuilder::new(
+            Cursor::new(Vec::new()),
+            vec![b"foo".to_vec(), b"foobar".to_vec()],
+            symbol_table,
+        )
+        .unwrap();
+        builder
+            .append(&Header::new(b"foo".to_vec(), 1), &mut (&[b'?'] as &[u8]))
+            .expect("add file");
+        builder
+            .append(
+                &Header::new(b"foobar".to_vec(), 1),
+                &mut (&[b'!'] as &[u8]),
+            )
+            .expect("add file");
+        let actual = builder.into_inner().unwrap().into_inner();
+        let expected = "!<arch>\n\
+        /                                               32        `\n\
+        \0\0\0\u{3}\0\0\0d\0\0\0d\0\0\0�bar\0bazz\0aaa\0 /\n\
+        foo/            0           0     0     0       1         `\n\
+        ?\n\
+        foobar/         0           0     0     0       1         `\n\
+        !\n";
+        assert_eq!(String::from_utf8_lossy(&actual), expected);
+
+        let mut archive = Archive::new(Cursor::new(actual));
+        assert_eq!(
+            archive
+                .symbols()
+                .unwrap()
+                .collect::<Vec<&SymbolTableEntry>>(),
+            vec![
+                &SymbolTableEntry {
+                    symbol_name: b"bar".to_vec(),
+                    file_offset: 100,
+                },
+                &SymbolTableEntry {
+                    symbol_name: b"bazz".to_vec(),
+                    file_offset: 100,
+                },
+                &SymbolTableEntry {
+                    symbol_name: b"aaa".to_vec(),
+                    file_offset: 162,
+                },
+            ]
+        );
     }
 }
 
