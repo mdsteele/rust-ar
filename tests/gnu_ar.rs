@@ -18,7 +18,9 @@ fn command(name: &str) -> Option<Command> {
     match Command::new(name).arg("--version").output() {
         Ok(out) => {
             if out.status.success() && as_str(&out.stdout).contains("GNU") {
-                Some(Command::new(name))
+                let mut command = Command::new(name);
+                command.env("TZ", "UTC");
+                Some(command)
             } else {
                 println!("None GNU tool ?\n{}{}", as_str(&out.stdout), as_str(&out.stderr));
                 None
@@ -56,8 +58,8 @@ fn gnu_tools_understand_archive() -> Result<()> {
     let gnu_out = gnu_ar.arg("tv").arg(test_file.path().as_os_str()).output()?;
     assert!(gnu_out.status.success());
     assert_eq!(indoc!(r#"
-        rw-r--r-- 0/0   1328 Dec 31 16:00 1969 object_normal_syms.o
-        rw-r--r-- 0/0   1232 Dec 31 16:00 1969 object_weak_syms.o
+        rw-r--r-- 0/0   1328 Jan  1 00:00 1970 object_normal_syms.o
+        rw-r--r-- 0/0   1232 Jan  1 00:00 1970 object_weak_syms.o
     "#), as_str(&gnu_out.stdout));
 
     // NM test here
