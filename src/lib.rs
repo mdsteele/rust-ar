@@ -31,15 +31,17 @@
 //! Writing an archive:
 //!
 //! ```no_run
-//! use ar::Builder;
+//! use ar::{Builder, GnuBuilder};
 //! use std::fs::File;
-//! // Create a new archive that will be written to foo.a:
-//! let mut builder = Builder::new(File::create("foo.a").unwrap());
+//! // Create a new archive for GNU format
+//! let mut builder = GnuBuilder::default();
 //! // Add foo/bar.txt to the archive, under the name "bar.txt":
 //! builder.append_path("foo/bar.txt").unwrap();
 //! // Add foo/baz.txt to the archive, under the name "hello.txt":
 //! let mut file = File::open("foo/baz.txt").unwrap();
 //! builder.append_file(b"hello.txt", &mut file).unwrap();
+//! // Finish building
+//! let archive = builder.finish().unwrap();
 //! ```
 //!
 //! Reading an archive:
@@ -63,26 +65,34 @@
 //!     io::copy(&mut entry, &mut file).unwrap();
 //! }
 //! ```
-
+#![deny(unused_must_use)]
 #![warn(missing_docs)]
 
+use smallvec::SmallVec;
+
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::mem::size_of;
 use std::cmp;
-use std::collections::{HashMap, HashSet};
-use std::ffi::OsStr;
-use std::fs::{File, Metadata};
+use std::fs::{Metadata, OpenOptions};
 use std::io::{self, BufRead, BufReader, Error, ErrorKind, Read, Result, Seek,
               SeekFrom, Write};
 use std::path::Path;
 use std::str;
 
+#[cfg(test)]
+mod test_support;
+
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
+mod error;
+pub mod builder;
+pub use builder::{Builder, GnuBuilder};
 
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
+/// Internal optimisation of idents, assuming most idents are smaller than the extended
+/// string size of the formats that allow such strings.
+type Ident = SmallVec<[u8; 16]>;
+
 
 // ========================================================================= //
 
@@ -101,13 +111,20 @@ fn read_be_u32(r: &mut impl io::Read) -> io::Result<u32> {
 const GLOBAL_HEADER_LEN: usize = 8;
 const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
+const HEADER_FILL_BYTE: u8 = 0x20;
+const HEADER_SIZE_LEN: usize = 10;
+const HEADER_END_MARKER: &[u8; 2] = b"`\n";
+const HEADER_END_MARKER_LEN: usize = 2;
+
+const ENTRY_NAME_MAX_LEN: usize = 16;
 const ENTRY_HEADER_LEN: usize = 60;
 
 const BSD_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"__.SYMDEF";
 const BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"__.SYMDEF SORTED";
 
-const GNU_NAME_TABLE_ID: &str = "//";
-const GNU_SYMBOL_LOOKUP_TABLE_ID: &[u8] = b"/";
+const GNU_NAME_TABLE_ID: &[u8; 16] = b"//              ";
+const GNU_SYMBOL_LOOKUP_TABLE_ID: &[u8; 16] = b"/               ";
+const GNU_SYMBOL_64_LOOKUP_TABLE_ID: &[u8; 16] = b"/SYM64          ";
 
 // ========================================================================= //
 
@@ -122,12 +139,23 @@ pub enum Variant {
     GNU,
 }
 
+/// Variants of the symbol table if present
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolTableVariant {
+    /// Used by BSD Archives the more "classical" unix symbol table
+    BSD,
+    /// Used in GNU, SVR4 and others
+    GNU,
+    /// The extended format used when an archive becomes larger than 4gb
+    GNU64BIT,
+}
+
 // ========================================================================= //
 
 /// Representation of an archive entry header.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Header {
-    identifier: Vec<u8>,
+    identifier: Ident,
     mtime: u64,
     uid: u32,
     gid: u32,
@@ -136,23 +164,18 @@ pub struct Header {
 }
 
 impl Header {
-    /// Creates a header with the given file identifier and size, and all
-    /// other fields set to zero.
-    pub fn new(identifier: Vec<u8>, size: u64) -> Header {
+    pub(crate) fn new_with_id(identifier: Ident, size: u64) -> Self {
         Header {
-            identifier,
             mtime: 0,
             uid: 0,
             gid: 0,
-            mode: 0,
+            mode:0o644,
             size,
+            identifier,
         }
     }
 
-    /// Creates a header with the given file identifier and all other fields
-    /// set from the given filesystem metadata.
-    #[cfg(unix)]
-    pub fn from_metadata(identifier: Vec<u8>, meta: &Metadata) -> Header {
+    pub(crate) fn from_meta(identifier: Ident, meta: &Metadata) -> Self {
         Header {
             identifier,
             mtime: meta.mtime() as u64,
@@ -162,18 +185,35 @@ impl Header {
             size: meta.len(),
         }
     }
+}
 
-    #[cfg(not(unix))]
-    pub fn from_metadata(identifier: Vec<u8>, meta: &Metadata) -> Header {
-        Header::new(identifier, meta.len())
+impl Header {
+    /// Creates a header with the given file identifier and size, and all
+    /// other fields set to zero, as per a deterministic archive entry.
+    pub fn new<I: AsRef<[u8]>>(identifier: I, size: u64) -> Self {
+        Self::new_with_id(Ident::from_slice(identifier.as_ref()), size)
+    }
+
+    /// Creates a header with the given file identifier and all other fields
+    /// set from the given filesystem metadata.
+    pub fn from_metadata<I: AsRef<[u8]>>(identifier: I, meta: &Metadata) -> Self {
+        Self::from_meta(Ident::from_slice(identifier.as_ref()), meta)
+    }
+
+    /// Convert a given header into a new deterministic one
+    ///
+    /// A deterministic header is one where all the extended metadata fields are set to `0`
+    /// this is done to make linker input and output more functional in nature
+    pub fn make_deterministic(&self) -> Header {
+        Self::new(self.identifier.clone(), self.size)
     }
 
     /// Returns the file identifier.
     pub fn identifier(&self) -> &[u8] { &self.identifier }
 
     /// Sets the file identifier.
-    pub fn set_identifier(&mut self, identifier: Vec<u8>) {
-        self.identifier = identifier;
+    pub fn set_identifier<I: AsRef<[u8]>>(&mut self, identifier: I) {
+        self.identifier = Ident::from_slice(identifier.as_ref());
     }
 
     /// Returns the last modification time in Unix time format.
@@ -206,12 +246,19 @@ impl Header {
     /// Sets the length of the file, in bytes.
     pub fn set_size(&mut self, size: u64) { self.size = size; }
 
+    /// Validates the header is somewhat sane against the specification
+    pub fn validate(&self) -> Result<()> {
+        ensure!(num_digits(self.mtime as f64, 10) <= 12, "MTime `{}` > 12 digits", self.mtime);
+        ensure!(num_digits(self.uid, 10) <= 6, "UID `{}` > 6 digits", self.uid);
+        ensure!(num_digits(self.gid, 10) <= 6, "GID `{}` > 6 digits", self.gid);
+        ensure!(num_digits(self.mode, 8) <= 8, "Mode `{:o}` > 8 octal digits", self.mode);
+        Ok(())
+    }
+
     /// Parses and returns the next header and its length.  Returns `Ok(None)`
     /// if we are at EOF.
-    fn read<R>(reader: &mut R, variant: &mut Variant, name_table: &mut Vec<u8>)
+    fn read<R: Read>(reader: &mut R, variant: &mut Variant, name_table: &mut Vec<u8>)
         -> Result<Option<(Header, u64)>>
-    where
-        R: Read,
     {
         let mut buffer = [0; 60];
         let bytes_read = reader.read(&mut buffer)?;
@@ -229,18 +276,15 @@ impl Header {
                 }
             }
         }
-        let mut identifier = buffer[0..16].to_vec();
-        while identifier.last() == Some(&b' ') {
-            identifier.pop();
-        }
+        let mut identifier = SmallVec::from_slice(&buffer[0..ENTRY_NAME_MAX_LEN]);
         let mut size = parse_number("file size", &buffer[48..58], 10)?;
         let mut header_len = ENTRY_HEADER_LEN as u64;
         if *variant != Variant::BSD && identifier.starts_with(b"/") {
             *variant = Variant::GNU;
-            if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID {
+            if identifier.as_ref() == GNU_SYMBOL_LOOKUP_TABLE_ID {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
-            } else if identifier == GNU_NAME_TABLE_ID.as_bytes() {
+            } else if identifier.as_ref() == GNU_NAME_TABLE_ID {
                 *name_table = vec![0; size as usize];
                 reader.read_exact(name_table as &mut [u8]).map_err(|err| {
                     annotate(err, "failed to read name table")
@@ -249,18 +293,25 @@ impl Header {
             }
             let start =
                 parse_number("GNU filename index", &buffer[1..16], 10)? as
-                    usize;
+                usize;
             let end = match name_table[start..].iter().position(|&ch| {
                 ch == b'/' || ch == b'\x00'
             }) {
                 Some(len) => start + len,
                 None => name_table.len(),
             };
-            identifier = name_table[start..end].to_vec();
-        } else if *variant != Variant::BSD && identifier.ends_with(b"/") {
+            identifier = SmallVec::from_slice(&name_table[start..end]);
+        }
+
+        while identifier.last() == Some(&b' ') {
+            identifier.pop();
+        }
+
+        if *variant != Variant::BSD && identifier.ends_with(b"/") {
             *variant = Variant::GNU;
             identifier.pop();
         }
+
         let mtime = parse_number("timestamp", &buffer[16..28], 10)?;
         let uid = if *variant == Variant::GNU {
             parse_number_permitting_empty("owner ID", &buffer[28..34], 10)?
@@ -288,7 +339,8 @@ impl Header {
             }
             size -= padded_length;
             header_len += padded_length;
-            let mut id_buffer = vec![0; padded_length as usize];
+            let mut id_buffer: SmallVec<[u8; 16]> = SmallVec::with_capacity(padded_length as usize);
+            id_buffer.resize(padded_length as usize, 0);
             let bytes_read = reader.read(&mut id_buffer)?;
             if bytes_read < id_buffer.len() {
                 if let Err(error) = reader.read_exact(
@@ -309,8 +361,8 @@ impl Header {
                 id_buffer.pop();
             }
             identifier = id_buffer;
-            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
-                identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+            if identifier.as_ref() == BSD_SYMBOL_LOOKUP_TABLE_ID ||
+                identifier.as_ref() == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
             {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
@@ -329,62 +381,11 @@ impl Header {
         )))
     }
 
-    fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        if self.identifier.len() > 16 || self.identifier.contains(&b' ') {
-            let padding_length = (4 - self.identifier.len() % 4) % 4;
-            let padded_length = self.identifier.len() + padding_length;
-            write!(
-                writer,
-                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-                padded_length,
-                self.mtime,
-                self.uid,
-                self.gid,
-                self.mode,
-                self.size + padded_length as u64
-            )?;
-            writer.write_all(&self.identifier)?;
-            writer.write_all(&vec![0; padding_length])?;
-        } else {
-            writer.write_all(&self.identifier)?;
-            writer.write_all(&vec![b' '; 16 - self.identifier.len()])?;
-            write!(
-                writer,
-                "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-                self.mtime,
-                self.uid,
-                self.gid,
-                self.mode,
-                self.size
-            )?;
-        }
-        Ok(())
-    }
+}
 
-    fn write_gnu<W>(&self, writer: &mut W, names: &HashMap<Vec<u8>, usize>)
-        -> Result<()>
-    where
-        W: Write,
-    {
-        if self.identifier.len() > 15 {
-            let offset = names[&self.identifier];
-            write!(writer, "/{:<15}", offset)?;
-        } else {
-            writer.write_all(&self.identifier)?;
-            writer.write_all(b"/")?;
-            writer.write_all(&vec![b' '; 15 - self.identifier.len()])?;
-        }
-        write!(
-            writer,
-            "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-            self.mtime,
-            self.uid,
-            self.gid,
-            self.mode,
-            self.size
-        )?;
-        Ok(())
-    }
+#[inline]
+fn num_digits<N: Into<f64>, B: Into<f64>>(val: N, radix: B) -> u32 {
+    (val.into().ln() / radix.into().ln()).floor() as u32 + 1
 }
 
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
@@ -481,8 +482,7 @@ impl<R: Read> Archive<R> {
     pub fn into_inner(self) -> Result<R> { Ok(self.reader) }
 
     fn is_name_table_id(&self, identifier: &[u8]) -> bool {
-        self.variant == Variant::GNU &&
-            identifier == GNU_NAME_TABLE_ID.as_bytes()
+        self.variant == Variant::GNU && identifier == GNU_NAME_TABLE_ID
     }
 
     fn is_symbol_lookup_table_id(&self, identifier: &[u8]) -> bool {
@@ -609,6 +609,7 @@ impl<R: Read> Archive<R> {
             }
         }
     }
+
 }
 
 impl<R: Read + Seek> Archive<R> {
@@ -693,6 +694,27 @@ impl<R: Read + Seek> Archive<R> {
         })
     }
 
+    /// Get the entry indexes for the given symbol name
+    ///
+    /// These can be used later with `jump_to_entry` to get the actual entry
+    pub fn entries_for_symbol<S: AsRef<[u8]>>(&mut self, symbol: S) -> io::Result<SymbolEntries> {
+        self.scan_if_necessary()?;
+
+        let raw_name = symbol.as_ref();
+
+        let indexes = self.symbols()?
+            .filter(|sym| sym.raw_name() == raw_name)
+            .map(|sym| sym.offset())
+            .collect::<SmallVec<[_; 4]>>()
+            .into_iter()
+            .rev()
+            .map(|off| self.entry_headers.binary_search_by(|x| x.header_start.cmp(&off)))
+            .collect::<std::result::Result<SmallVec<[_; 4]>, _>>()
+            .expect("Multiple identical offsets found in archive!");
+
+        Ok(SymbolEntries(indexes))
+    }
+
     fn parse_symbol_table_if_necessary(&mut self) -> io::Result<()> {
         self.scan_if_necessary()?;
         if self.symbol_table.is_some() {
@@ -753,6 +775,7 @@ impl<R: Read + Seek> Archive<R> {
                 self.symbol_table = Some(symbol_table);
             }
         }
+
         // Resume our previous position in the file.
         if self.entry_headers.len() > 0 {
             let offset = self.entry_headers[self.next_entry_index]
@@ -852,6 +875,33 @@ impl<'a, R: 'a + Read> Drop for Entry<'a, R> {
 }
 
 // ========================================================================= //
+/// A Symbol in the archive
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd, Debug)]
+pub struct Symbol<'a> {
+    offset: u64,
+    name: &'a [u8],
+}
+
+impl <'a> Symbol<'a> {
+    /// The name as raw bytes for the symbol
+    ///
+    pub fn raw_name(&self) -> &'a [u8] {
+        self.name
+    }
+
+    /// The location in the archive this symbol points to
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// The name of the symbol
+    ///
+    /// Note: Symbol names do not have to be valid ASCII or UTF-8 strings, if in doubt use
+    /// `raw_name`
+    pub fn name(&self) -> Result<&'a str> {
+        std::str::from_utf8(self.name).map_err(|_| err!("Name not UTF-8"))
+    }
+}
 
 /// An iterator over the symbols in the symbol table of an archive.
 pub struct Symbols<'a, R: 'a + Read> {
@@ -860,14 +910,16 @@ pub struct Symbols<'a, R: 'a + Read> {
 }
 
 impl<'a, R: Read> Iterator for Symbols<'a, R> {
-    type Item = &'a [u8];
+    type Item = Symbol<'a>;
 
-    fn next(&mut self) -> Option<&'a [u8]> {
+    fn next(&mut self) -> Option<Self::Item> {
         if let Some(ref table) = self.archive.symbol_table {
             if self.index < table.len() {
-                let next = table[self.index].0.as_slice();
+                let next = &table[self.index];
+                let name = next.0.as_slice();
+                let offset = next.1;
                 self.index += 1;
-                return Some(next);
+                return Some(Symbol { name, offset });
             }
         }
         None
@@ -885,243 +937,96 @@ impl<'a, R: Read> Iterator for Symbols<'a, R> {
 
 impl<'a, R: Read> ExactSizeIterator for Symbols<'a, R> {}
 
+pub struct SymbolEntries(SmallVec<[usize; 4]>);
+
+impl Iterator for SymbolEntries {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.pop()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.0.capacity(), Some(self.0.len()))
+    }
+}
+
+impl ExactSizeIterator for SymbolEntries {}
+
 // ========================================================================= //
 
+/*
 /// A structure for building Common or BSD-variant archives (the archive format
 /// typically used on e.g. BSD and Mac OS X systems).
 ///
 /// This structure has methods for building up an archive from scratch into any
 /// arbitrary writer.
-pub struct Builder<W: Write> {
-    writer: W,
-    started: bool,
+pub struct BsdBuilder {
+    deterministic: bool,
+    symbols: Vec<(smallvec::SmallVec::<[u8; 32]>, usize)>,
+    entities: ArchiveBuilderData,
 }
 
-impl<W: Write> Builder<W> {
+impl Default for BsdBuilder {
+    fn default() -> Self {
+        const DEFAULT_SPILL_SIZE: usize = 2 * 1024 * 1024;
+        BsdBuilder::new(DEFAULT_SPILL_SIZE, true, true)
+    }
+}
+
+/*
+impl BsdBuilder {
+    fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
+        if self.identifier.len() > 16 || self.identifier.contains(&b' ') {
+            let padding_length = (4 - self.identifier.len() % 4) % 4;
+            let padded_length = self.identifier.len() + padding_length;
+            write!(
+                writer,
+                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                padded_length,
+                self.mtime,
+                self.uid,
+                self.gid,
+                self.mode,
+                self.size + padded_length
+            )?;
+            writer.write_all(&self.identifier)?;
+            writer.write_all(&vec![0; padding_length])?;
+        } else {
+            writer.write_all(&self.identifier)?;
+            writer.write_all(&vec![b' '; 16 - self.identifier.len()])?;
+            write!(
+                writer,
+                "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                self.mtime,
+                self.uid,
+                self.gid,
+                self.mode,
+                self.size
+            )?;
+        }
+        Ok(())
+    }
+}
+*/
+
+*/
+
+
+/*
+impl BsdBuilder {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
-    pub fn new(writer: W) -> Builder<W> {
-        Builder {
-            writer,
-            started: false,
+    pub fn new_builder(spill_threshold: usize, deterministic: bool, use_symbols: bool) -> Self {
+        Self {
+            deterministic,
+            symbols: Vec::new(),
+            entities: ArchiveBuilderData::new(spill_threshold),
         }
-    }
-
-    /// Unwrap this archive builder, returning the underlying writer object.
-    pub fn into_inner(self) -> Result<W> { Ok(self.writer) }
-
-    /// Adds a new entry to this archive.
-    pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-        -> Result<()> {
-        if !self.started {
-            self.writer.write_all(GLOBAL_HEADER)?;
-            self.started = true;
-        }
-        header.write(&mut self.writer)?;
-        let actual_size = io::copy(&mut data, &mut self.writer)?;
-        if actual_size != header.size() {
-            let msg = format!(
-                "Wrong file size (header.size() = {}, actual \
-                               size was {})",
-                header.size(),
-                actual_size
-            );
-            return Err(Error::new(ErrorKind::InvalidData, msg));
-        }
-        if actual_size % 2 != 0 {
-            self.writer.write_all(&['\n' as u8])?;
-        }
-        Ok(())
-    }
-
-    /// Adds a file on the local filesystem to this archive, using the file
-    /// name as its identifier.
-    pub fn append_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let name: &OsStr = path.as_ref().file_name().ok_or_else(|| {
-            let msg = "Given path doesn't have a file name";
-            Error::new(ErrorKind::InvalidInput, msg)
-        })?;
-        let identifier = osstr_to_bytes(name)?;
-        let mut file = File::open(&path)?;
-        self.append_file_id(identifier, &mut file)
-    }
-
-    /// Adds a file to this archive, with the given name as its identifier.
-    pub fn append_file(&mut self, name: &[u8], file: &mut File) -> Result<()> {
-        self.append_file_id(name.to_vec(), file)
-    }
-
-    fn append_file_id(&mut self, id: Vec<u8>, file: &mut File) -> Result<()> {
-        let metadata = file.metadata()?;
-        let header = Header::from_metadata(id, &metadata);
-        self.append(&header, file)
     }
 }
+*/
 
-// ========================================================================= //
-
-/// A structure for building GNU-variant archives (the archive format typically
-/// used on e.g. GNU/Linux and Windows systems).
-///
-/// This structure has methods for building up an archive from scratch into any
-/// arbitrary writer.
-pub struct GnuBuilder<W: Write> {
-    writer: W,
-    short_names: HashSet<Vec<u8>>,
-    long_names: HashMap<Vec<u8>, usize>,
-    name_table_size: usize,
-    name_table_needs_padding: bool,
-    started: bool,
-}
-
-impl<W: Write> GnuBuilder<W> {
-    /// Create a new archive builder with the underlying writer object as the
-    /// destination of all data written.  The `identifiers` parameter must give
-    /// the complete list of entry identifiers that will be included in this
-    /// archive.
-    pub fn new(writer: W, identifiers: Vec<Vec<u8>>) -> GnuBuilder<W> {
-        let mut short_names = HashSet::<Vec<u8>>::new();
-        let mut long_names = HashMap::<Vec<u8>, usize>::new();
-        let mut name_table_size: usize = 0;
-        for identifier in identifiers.into_iter() {
-            let length = identifier.len();
-            if length > 15 {
-                long_names.insert(identifier, name_table_size);
-                name_table_size += length + 2;
-            } else {
-                short_names.insert(identifier);
-            }
-        }
-        let name_table_needs_padding = name_table_size % 2 != 0;
-        if name_table_needs_padding {
-            name_table_size += 3; // ` /\n`
-        }
-
-        GnuBuilder {
-            writer,
-            short_names,
-            long_names,
-            name_table_size,
-            name_table_needs_padding,
-            started: false,
-        }
-    }
-
-    /// Unwrap this archive builder, returning the underlying writer object.
-    pub fn into_inner(self) -> Result<W> { Ok(self.writer) }
-
-    /// Adds a new entry to this archive.
-    pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-        -> Result<()> {
-        let is_long_name = header.identifier().len() > 15;
-        let has_name = if is_long_name {
-            self.long_names.contains_key(header.identifier())
-        } else {
-            self.short_names.contains(header.identifier())
-        };
-        if !has_name {
-            let msg = format!(
-                "Identifier {:?} was not in the list of \
-                 identifiers passed to GnuBuilder::new()",
-                String::from_utf8_lossy(header.identifier())
-            );
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
-        }
-
-        if !self.started {
-            self.writer.write_all(GLOBAL_HEADER)?;
-            if !self.long_names.is_empty() {
-                write!(
-                    self.writer,
-                    "{:<48}{:<10}`\n",
-                    GNU_NAME_TABLE_ID,
-                    self.name_table_size
-                )?;
-                let mut entries: Vec<(usize, &[u8])> = self.long_names
-                    .iter()
-                    .map(|(id, &start)| (start, id.as_slice()))
-                    .collect();
-                entries.sort();
-                for (_, id) in entries {
-                    self.writer.write_all(id)?;
-                    self.writer.write_all(b"/\n")?;
-                }
-                if self.name_table_needs_padding {
-                    self.writer.write_all(b" /\n")?;
-                }
-            }
-            self.started = true;
-        }
-
-        header.write_gnu(&mut self.writer, &self.long_names)?;
-        let actual_size = io::copy(&mut data, &mut self.writer)?;
-        if actual_size != header.size() {
-            let msg = format!(
-                "Wrong file size (header.size() = {}, actual \
-                               size was {})",
-                header.size(),
-                actual_size
-            );
-            return Err(Error::new(ErrorKind::InvalidData, msg));
-        }
-        if actual_size % 2 != 0 {
-            self.writer.write_all(&['\n' as u8])?;
-        }
-
-        Ok(())
-    }
-
-    /// Adds a file on the local filesystem to this archive, using the file
-    /// name as its identifier.
-    pub fn append_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let name: &OsStr = path.as_ref().file_name().ok_or_else(|| {
-            let msg = "Given path doesn't have a file name";
-            Error::new(ErrorKind::InvalidInput, msg)
-        })?;
-        let identifier = osstr_to_bytes(name)?;
-        let mut file = File::open(&path)?;
-        self.append_file_id(identifier, &mut file)
-    }
-
-    /// Adds a file to this archive, with the given name as its identifier.
-    pub fn append_file(&mut self, name: &[u8], file: &mut File) -> Result<()> {
-        self.append_file_id(name.to_vec(), file)
-    }
-
-    fn append_file_id(&mut self, id: Vec<u8>, file: &mut File) -> Result<()> {
-        let metadata = file.metadata()?;
-        let header = Header::from_metadata(id, &metadata);
-        self.append(&header, file)
-    }
-}
-
-// ========================================================================= //
-
-#[cfg(unix)]
-fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
-    Ok(string.as_bytes().to_vec())
-}
-
-#[cfg(windows)]
-fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
-    let mut bytes = Vec::<u8>::new();
-    for wide in string.encode_wide() {
-        // Little-endian:
-        bytes.push((wide & 0xff) as u8);
-        bytes.push((wide >> 8) as u8);
-    }
-    Ok(bytes)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
-    let utf8: &str = string.to_str().ok_or_else(|| {
-        Error::new(ErrorKind::InvalidData, "Non-UTF8 file name")
-    })?;
-    Ok(utf8.as_bytes().to_vec())
-}
-
-// ========================================================================= //
 
 fn annotate(error: io::Error, msg: &str) -> io::Error {
     let kind = error.kind();
@@ -1132,13 +1037,11 @@ fn annotate(error: io::Error, msg: &str) -> io::Error {
     }
 }
 
-// ========================================================================= //
-
 #[cfg(test)]
 mod tests {
-    use super::{Archive, Builder, GnuBuilder, Header, Variant};
+    use super::*;
     use std::io::{Cursor, Read, Result, Seek, SeekFrom};
-    use std::str;
+    use pretty_assertions::assert_eq;
 
     struct SlowReader<'a> {
         current_position: usize,
@@ -1155,6 +1058,24 @@ mod tests {
             return Ok(1);
         }
     }
+
+    #[test]
+    fn header_limits() {
+        let assert_err = |mutator: fn(&mut Header) -> (), msg: &str| {
+            let mut header = Header::new(b"some ident", 12345);
+            mutator(&mut header);
+            let err = header.validate().expect_err("No error produced!");
+            assert_eq!(err.kind(), ErrorKind::InvalidData);
+            assert_eq!(&err.into_inner().unwrap().to_string(), msg);
+        };
+
+        assert_err(|hdr| hdr.set_mtime(1234567890123), "MTime `1234567890123` > 12 digits");
+        assert_err(|hdr| hdr.set_uid(1234567), "UID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_gid(1234567), "GID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_mode(0o123456712), "Mode `123456712` > 8 octal digits");
+    }
+
+    /*
 
     #[test]
     fn build_common_archive() {
@@ -1215,85 +1136,9 @@ mod tests {
         foo bar\x00baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
+    */
 
-    #[test]
-    fn build_gnu_archive() {
-        let names = vec![b"baz.txt".to_vec(), b"foo.txt".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
-        let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
-        header1.set_mtime(1487552916);
-        header1.set_uid(501);
-        header1.set_gid(20);
-        header1.set_mode(0o100644);
-        builder.append(&header1, "foobar\n".as_bytes()).unwrap();
-        let header2 = Header::new(b"baz.txt".to_vec(), 4);
-        builder.append(&header2, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
-        let expected = "\
-        !<arch>\n\
-        foo.txt/        1487552916  501   20    100644  7         `\n\
-        foobar\n\n\
-        baz.txt/        0           0     0     0       4         `\n\
-        baz\n";
-        assert_eq!(str::from_utf8(&actual).unwrap(), expected);
-    }
-
-    #[test]
-    fn build_gnu_archive_with_long_filenames() {
-        let names = vec![
-            b"this_is_a_very_long_filename.txt".to_vec(),
-            b"and_this_is_another_very_long_filename.txt".to_vec(),
-        ];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
-        let mut header1 = Header::new(b"short".to_vec(), 1);
-        header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
-        header1.set_mtime(1487552916);
-        header1.set_uid(501);
-        header1.set_gid(20);
-        header1.set_mode(0o100644);
-        header1.set_size(7);
-        builder.append(&header1, "foobar\n".as_bytes()).unwrap();
-        let header2 = Header::new(
-            b"and_this_is_another_very_long_filename.txt".to_vec(),
-            4,
-        );
-        builder.append(&header2, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
-        let expected = "\
-        !<arch>\n\
-        //                                              78        `\n\
-        this_is_a_very_long_filename.txt/\n\
-        and_this_is_another_very_long_filename.txt/\n\
-        /0              1487552916  501   20    100644  7         `\n\
-        foobar\n\n\
-        /34             0           0     0     0       4         `\n\
-        baz\n";
-        assert_eq!(str::from_utf8(&actual).unwrap(), expected);
-    }
-
-    #[test]
-    fn build_gnu_archive_with_space_in_filename() {
-        let names = vec![b"foo bar".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
-        let header = Header::new(b"foo bar".to_vec(), 4);
-        builder.append(&header, "baz\n".as_bytes()).unwrap();
-        let actual = builder.into_inner().unwrap();
-        let expected = "\
-        !<arch>\n\
-        foo bar/        0           0     0     0       4         `\n\
-        baz\n";
-        assert_eq!(str::from_utf8(&actual).unwrap(), expected);
-    }
-
-    #[test]
-    #[should_panic(expected = "Identifier \\\"bar\\\" was not in the list of \
-                               identifiers passed to GnuBuilder::new()")]
-    fn build_gnu_archive_with_unexpected_identifier() {
-        let names = vec![b"foo".to_vec()];
-        let mut builder = GnuBuilder::new(Vec::new(), names);
-        let header = Header::new(b"bar".to_vec(), 4);
-        builder.append(&header, "baz\n".as_bytes()).unwrap();
-    }
+    /*
 
     #[test]
     fn read_common_archive() {
@@ -1414,6 +1259,8 @@ mod tests {
         assert!(archive.next_entry().is_none());
         assert_eq!(archive.variant(), Variant::BSD);
     }
+
+    */
 
     #[test]
     fn read_gnu_archive() {
@@ -1951,7 +1798,7 @@ mod tests {
     }
 
     #[test]
-    fn list_symbols_in_bsd_archive() {
+    fn list_symbols_in_bsd_archive() -> Result<()> {
         let input = b"\
         !<arch>\n\
         #1/12           0           0     0     0       60        `\n\
@@ -1963,15 +1810,18 @@ mod tests {
         foo.o/          1487552916  501   20    100644  16        `\n\
         foobar,baz,quux\n";
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
-        assert_eq!(archive.symbols().unwrap().len(), 3);
+        assert_eq!(archive.symbols()?.len(), 3);
         assert_eq!(archive.variant(), Variant::BSD);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
-        let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
-        assert_eq!(symbols, expected);
+        let symbols = archive.symbols()?
+            .map(|x| x.name().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(symbols, vec!["foobar", "baz", "quux"]);
+
+        Ok(())
     }
 
     #[test]
-    fn list_sorted_symbols_in_bsd_archive() {
+    fn list_sorted_symbols_in_bsd_archive() -> Result<()> {
         let input = b"\
         !<arch>\n\
         #1/16           0           0     0     0       64        `\n\
@@ -1983,15 +1833,18 @@ mod tests {
         foo.o/          1487552916  501   20    100644  16        `\n\
         foobar,baz,quux\n";
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
-        assert_eq!(archive.symbols().unwrap().len(), 3);
+        assert_eq!(archive.symbols()?.len(), 3);
         assert_eq!(archive.variant(), Variant::BSD);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
-        let expected: Vec<&[u8]> = vec![b"baz", b"foobar", b"quux"];
-        assert_eq!(symbols, expected);
+        let symbols = archive.symbols()?
+            .map(|x| x.name().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(symbols, vec!["baz", "foobar", "quux"]);
+
+        Ok(())
     }
 
     #[test]
-    fn list_symbols_in_gnu_archive() {
+    fn list_symbols_in_gnu_archive() -> Result<()> {
         let input = b"\
         !<arch>\n\
         /               0           0     0     0       32        `\n\
@@ -2000,33 +1853,23 @@ mod tests {
         foo.o/          1487552916  501   20    100644  16        `\n\
         foobar,baz,quux\n";
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
-        assert_eq!(archive.symbols().unwrap().len(), 3);
+        assert_eq!(archive.symbols()?.len(), 3);
         assert_eq!(archive.variant(), Variant::GNU);
-        let symbols = archive.symbols().unwrap().collect::<Vec<&[u8]>>();
-        let expected: Vec<&[u8]> = vec![b"foobar", b"baz", b"quux"];
-        assert_eq!(symbols, expected);
+        let symbols = archive.symbols()?
+            .map(|x| x.name().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(symbols, vec!["foobar", "baz", "quux"]);
+
+        Ok(())
     }
 
     #[test]
-    fn non_multiple_of_two_long_ident_in_gnu_archive() {
-        let mut buffer = std::io::Cursor::new(Vec::new());
-
-        {
-            let filenames = vec![b"rust.metadata.bin".to_vec(), b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o".to_vec()];
-            let mut builder = GnuBuilder::new(&mut buffer, filenames.clone());
-
-            for filename in filenames {
-                builder.append(&Header::new(filename, 1), &mut (&[b'?'] as &[u8])).expect("add file");
-            }
-        }
-
-        buffer.set_position(0);
-
-        let mut archive = Archive::new(buffer);
-        while let Some(entry) = archive.next_entry() {
-            entry.unwrap();
-        }
+    fn num_digits_valid() {
+        assert_eq!(num_digits(16777216, 16), 7);
+        assert_eq!(num_digits(16777216, 10), 8);
+        assert_eq!(num_digits(16777216, 8), 9);
+        assert_eq!(num_digits(0, 16), 1);
+        assert_eq!(num_digits(0, 10), 1);
+        assert_eq!(num_digits(0, 8), 1);
     }
 }
-
-// ========================================================================= //

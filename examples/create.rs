@@ -15,8 +15,9 @@
 
 extern crate ar;
 
+use ar::{Builder, GnuBuilder};
+
 use std::env;
-use std::fs::File;
 use std::path::Path;
 
 fn main() {
@@ -27,10 +28,8 @@ fn main() {
     }
 
     let output_path = env::args().nth(1).unwrap();
-    let output_path = Path::new(&output_path);
-    let output_file =
-        File::create(output_path).expect("failed to open output file");
-    let mut builder = ar::Builder::new(output_file);
+
+    let mut builder = GnuBuilder::default();
 
     for index in 2..num_args {
         let input_path = env::args().nth(index).unwrap();
@@ -40,4 +39,6 @@ fn main() {
             input_path
         ));
     }
+
+    builder.finish_path(output_path).unwrap();
 }

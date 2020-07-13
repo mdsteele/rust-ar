@@ -1,9 +1,27 @@
 [package]
 name = "ar"
 version = "0.8.0"
+edition = "2018"
 authors = ["Matthew D. Steele <mdsteele@alum.mit.edu>"]
 description = "A library for encoding/decoding Unix archive files."
 repository = "https://github.com/mdsteele/rust-ar"
 keywords = ["ar", "archive", "deb"]
 license = "MIT"
 readme = "README.md"
+
+[dependencies]
+tempfile = "3.1.0"
+smallvec = "1.4.0"
+itoa = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+nix = "0.17"
+libc = "0.2"
+
+[dev-dependencies]
+pretty_assertions = "0.6"
+proptest = "0.10"
+criterion = "0.3"
+itertools = "0.9"
+assert_cmd = "1.0"
+indoc = "0.3"
