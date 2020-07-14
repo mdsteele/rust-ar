@@ -71,7 +71,7 @@ mod read;
 mod write;
 
 pub use read::{Archive, Entry, SymbolTableEntry, Symbols};
-pub use write::{Builder, GnuBuilder};
+pub use write::{Builder, GnuBuilder, GnuSymbolTableFormat};
 
 use std::fs::Metadata;
 
@@ -90,6 +90,7 @@ const BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID: &str = "__.SYMDEF SORTED";
 
 const GNU_NAME_TABLE_ID: &str = "//";
 const GNU_SYMBOL_LOOKUP_TABLE_ID: &str = "/";
+const GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID: &str = "/SYM64";
 
 // ========================================================================= //
 
@@ -102,6 +103,17 @@ pub enum Variant {
     BSD,
     /// Used by GNU `ar` (and Windows); incompatible with common variant.
     GNU,
+}
+
+/// Variants of the symbol table if present
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SymbolTableVariant {
+    /// Used by BSD Archives the more "classical" unix symbol table
+    BSD,
+    /// Used in GNU, SVR4 and others
+    GNU,
+    /// The extended format used when an archive becomes larger than 4gb
+    GNU64BIT,
 }
 
 // ========================================================================= //

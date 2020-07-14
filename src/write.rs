@@ -83,7 +83,10 @@ pub struct Builder<W: Write + Seek> {
 impl<W: Write + Seek> Builder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
-    pub fn new(mut writer: W, symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>) -> Result<Builder<W>> {
+    pub fn new(
+        mut writer: W,
+        symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
+    ) -> Result<Builder<W>> {
         writer.write_all(GLOBAL_HEADER)?;
 
         let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
@@ -98,12 +101,17 @@ impl<W: Write + Seek> Builder<W> {
                 .flat_map(|(_identifier, symbols)| symbols)
                 .map(|symbol| symbol.len() + 1)
                 .sum::<usize>();
-            let mut symbol_table_size: usize = 4 + 8 * symbol_count + 4 + total_symbol_size;
+            let mut symbol_table_size: usize =
+                4 + 8 * symbol_count + 4 + total_symbol_size;
             let symbol_table_needs_padding = symbol_table_size % 2 != 0;
             if symbol_table_needs_padding {
                 symbol_table_size += 3; // ` /\n`
             }
-            write!(writer, "#1/12           0           0     0     0       {:<10}`\n", symbol_table_size + 12)?;
+            write!(
+                writer,
+                "#1/12           0           0     0     0       {:<10}`\n",
+                symbol_table_size + 12
+            )?;
             writer.write_all(&*b"__.SYMDEF\0\0\0")?;
             writer.write_all(&u32::to_le_bytes(
                 8 * u32::try_from(symbol_count).map_err(|_| {
@@ -226,6 +234,13 @@ impl<W: Write + Seek> Builder<W> {
 
 // ========================================================================= //
 
+/// The format of the GNU symbol table.
+#[allow(missing_docs)]
+pub enum GnuSymbolTableFormat {
+    Size32,
+    Size64,
+}
+
 /// A structure for building GNU-variant archives (the archive format typically
 /// used on e.g. GNU/Linux and Windows systems).
 ///
@@ -235,6 +250,7 @@ pub struct GnuBuilder<W: Write + Seek> {
     writer: W,
     short_names: HashSet<Vec<u8>>,
     long_names: HashMap<Vec<u8>, usize>,
+    symtab_format: GnuSymbolTableFormat,
     symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>>,
 }
 
@@ -246,6 +262,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
     pub fn new(
         mut writer: W,
         identifiers: Vec<Vec<u8>>,
+        symtab_format: GnuSymbolTableFormat,
         symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     ) -> Result<GnuBuilder<W>> {
         let mut short_names = HashSet::<Vec<u8>>::new();
@@ -270,6 +287,10 @@ impl<W: Write + Seek> GnuBuilder<W> {
         let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
             HashMap::with_capacity(symbol_table.len());
         if !symbol_table.is_empty() {
+            let int_size = match symtab_format {
+                GnuSymbolTableFormat::Size32 => 4,
+                GnuSymbolTableFormat::Size64 => 8,
+            };
             let symbol_count: usize = symbol_table
                 .iter()
                 .map(|(_identifier, symbols)| symbols.len())
@@ -277,8 +298,8 @@ impl<W: Write + Seek> GnuBuilder<W> {
             let symbols = symbol_table
                 .iter()
                 .flat_map(|(_identifier, symbols)| symbols);
-            let mut symbol_table_size: usize = 4
-                + 4usize * symbol_count
+            let mut symbol_table_size: usize = int_size
+                + int_size * symbol_count
                 + symbols.map(|symbol| symbol.len() + 1).sum::<usize>();
             let symbol_table_needs_padding = symbol_table_size % 2 != 0;
             if symbol_table_needs_padding {
@@ -287,19 +308,33 @@ impl<W: Write + Seek> GnuBuilder<W> {
             write!(
                 writer,
                 "{:<48}{:<10}`\n",
-                GNU_SYMBOL_LOOKUP_TABLE_ID, symbol_table_size
+                match symtab_format {
+                    GnuSymbolTableFormat::Size32 => GNU_SYMBOL_LOOKUP_TABLE_ID,
+                    GnuSymbolTableFormat::Size64 =>
+                        GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID,
+                },
+                symbol_table_size
             )?;
-            writer.write_all(&u32::to_be_bytes(
-                u32::try_from(symbol_count).map_err(|_| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "More than 4 billion symbols??? There are {}",
-                            symbol_count
-                        ),
-                    )
-                })?,
-            ))?;
+            match symtab_format {
+                GnuSymbolTableFormat::Size32 => {
+                    writer.write_all(&u32::to_be_bytes(
+                        u32::try_from(symbol_count).map_err(|_| {
+                            Error::new(
+                                ErrorKind::InvalidInput,
+                                format!(
+                                    "More than 4 billion symbols for a 32bit symbol table, there are {} symbols.",
+                                    symbol_count
+                                ),
+                            )
+                        })?,
+                    ))?;
+                }
+                GnuSymbolTableFormat::Size64 => {
+                    writer.write_all(&u64::to_be_bytes(
+                        u64::try_from(symbol_count).unwrap(),
+                    ))?;
+                }
+            }
             for identifier in
                 symbol_table.iter().flat_map(|(identifier, symbols)| {
                     std::iter::repeat(identifier).take(symbols.len())
@@ -309,7 +344,13 @@ impl<W: Write + Seek> GnuBuilder<W> {
                     .entry(identifier.clone())
                     .or_default()
                     .push(writer.seek(io::SeekFrom::Current(0))?);
-                writer.write_all(&u32::to_be_bytes(0xcafebabe))?;
+                match symtab_format {
+                    GnuSymbolTableFormat::Size32 => {
+                        writer.write_all(&u32::to_be_bytes(0xcafebabe))?
+                    }
+                    GnuSymbolTableFormat::Size64 => writer
+                        .write_all(&u64::to_be_bytes(0xcafebabe_deadbeef))?,
+                }
             }
             for symbol in symbol_table
                 .iter()
@@ -347,6 +388,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
             writer,
             short_names,
             long_names,
+            symtab_format,
             symbol_table_relocations,
         })
     }
@@ -379,13 +421,24 @@ impl<W: Write + Seek> GnuBuilder<W> {
             self.symbol_table_relocations.get(header.identifier())
         {
             let entry_offset = self.writer.seek(io::SeekFrom::Current(0))?;
-            let entry_offset_bytes = u32::to_be_bytes(
-                u32::try_from(entry_offset)
-                    .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("Archive is bigger than 4GB. It is already 0x{:x} bytes.", entry_offset)))?
-            );
-            for &reloc_offset in relocs {
-                self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
-                self.writer.write_all(&entry_offset_bytes)?;
+            match self.symtab_format {
+                GnuSymbolTableFormat::Size32 => {
+                    let entry_offset_bytes = u32::to_be_bytes(
+                        u32::try_from(entry_offset)
+                            .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("Archive is bigger than 4GB. It is already 0x{:x} bytes.", entry_offset)))?
+                    );
+                    for &reloc_offset in relocs {
+                        self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
+                        self.writer.write_all(&entry_offset_bytes)?;
+                    }
+                }
+                GnuSymbolTableFormat::Size64 => {
+                    let entry_offset_bytes = u64::to_be_bytes(entry_offset);
+                    for &reloc_offset in relocs {
+                        self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
+                        self.writer.write_all(&entry_offset_bytes)?;
+                    }
+                }
             }
             self.writer.seek(io::SeekFrom::Start(entry_offset))?;
         }
@@ -462,14 +515,18 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Archive, Builder, GnuBuilder, Header, SymbolTableEntry};
+    use super::{
+        Archive, Builder, GnuBuilder, GnuSymbolTableFormat, Header,
+        SymbolTableEntry,
+    };
     use std::collections::BTreeMap;
     use std::io::Cursor;
     use std::str;
 
     #[test]
     fn build_common_archive() {
-        let mut builder = Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
+        let mut builder =
+            Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -490,7 +547,8 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_long_filenames() {
-        let mut builder = Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
+        let mut builder =
+            Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -516,7 +574,8 @@ mod tests {
 
     #[test]
     fn build_bsd_archive_with_space_in_filename() {
-        let mut builder = Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
+        let mut builder =
+            Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap().into_inner();
@@ -530,9 +589,13 @@ mod tests {
     #[test]
     fn build_gnu_archive() {
         let names = vec![b"baz.txt".to_vec(), b"foo.txt".to_vec()];
-        let mut builder =
-            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
-                .unwrap();
+        let mut builder = GnuBuilder::new(
+            Cursor::new(Vec::new()),
+            names,
+            GnuSymbolTableFormat::Size32,
+            BTreeMap::new(),
+        )
+        .unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -557,9 +620,13 @@ mod tests {
             b"this_is_a_very_long_filename.txt".to_vec(),
             b"and_this_is_another_very_long_filename.txt".to_vec(),
         ];
-        let mut builder =
-            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
-                .unwrap();
+        let mut builder = GnuBuilder::new(
+            Cursor::new(Vec::new()),
+            names,
+            GnuSymbolTableFormat::Size32,
+            BTreeMap::new(),
+        )
+        .unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -589,9 +656,13 @@ mod tests {
     #[test]
     fn build_gnu_archive_with_space_in_filename() {
         let names = vec![b"foo bar".to_vec()];
-        let mut builder =
-            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
-                .unwrap();
+        let mut builder = GnuBuilder::new(
+            Cursor::new(Vec::new()),
+            names,
+            GnuSymbolTableFormat::Size32,
+            BTreeMap::new(),
+        )
+        .unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap().into_inner();
@@ -609,9 +680,13 @@ mod tests {
     )]
     fn build_gnu_archive_with_unexpected_identifier() {
         let names = vec![b"foo".to_vec()];
-        let mut builder =
-            GnuBuilder::new(Cursor::new(Vec::new()), names, BTreeMap::new())
-                .unwrap();
+        let mut builder = GnuBuilder::new(
+            Cursor::new(Vec::new()),
+            names,
+            GnuSymbolTableFormat::Size32,
+            BTreeMap::new(),
+        )
+        .unwrap();
         let header = Header::new(b"bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
     }
@@ -629,6 +704,7 @@ mod tests {
             let mut builder = GnuBuilder::new(
                 &mut buffer,
                 filenames.clone(),
+                GnuSymbolTableFormat::Size32,
                 BTreeMap::new(),
             )
             .unwrap();
@@ -657,6 +733,7 @@ mod tests {
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
             vec![b"foo".to_vec(), b"foobar".to_vec()],
+            GnuSymbolTableFormat::Size32,
             symbol_table,
         )
         .unwrap();
@@ -673,7 +750,9 @@ mod tests {
         let expected = "!<arch>\n\
         /                                               32        `\n\
         \0\0\0\x03\
-        \0\0\0d\0\0\0d\0\0\0�\
+        \0\0\0d\
+        \0\0\0d\
+        \0\0\0�\
         bar\0bazz\0aaa\0 /\n\
         foo/            0           0     0     0       1         `\n\
         ?\n\
@@ -705,16 +784,72 @@ mod tests {
     }
 
     #[test]
+    fn build_gnu_archive_with_64bit_symbol_table() {
+        let mut symbol_table = BTreeMap::new();
+        symbol_table
+            .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
+        symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
+        let mut builder = GnuBuilder::new(
+            Cursor::new(Vec::new()),
+            vec![b"foo".to_vec(), b"foobar".to_vec()],
+            GnuSymbolTableFormat::Size64,
+            symbol_table,
+        )
+        .unwrap();
+        builder
+            .append(&Header::new(b"foo".to_vec(), 1), &mut (&[b'?'] as &[u8]))
+            .expect("add file");
+        builder
+            .append(
+                &Header::new(b"foobar".to_vec(), 1),
+                &mut (&[b'!'] as &[u8]),
+            )
+            .expect("add file");
+        let actual = builder.into_inner().unwrap().into_inner();
+        let expected = "!<arch>\n\
+        /SYM64                                          48        `\n\
+        \0\0\0\0\0\0\0\x03\
+        \0\0\0\0\0\0\0t\
+        \0\0\0\0\0\0\0t\
+        \0\0\0\0\0\0\0�\
+        bar\0bazz\0aaa\0 /\n\
+        foo/            0           0     0     0       1         `\n\
+        ?\n\
+        foobar/         0           0     0     0       1         `\n\
+        !\n";
+        assert_eq!(String::from_utf8_lossy(&actual), expected);
+
+        let mut archive = Archive::new(Cursor::new(actual));
+        assert_eq!(
+            archive
+                .symbols()
+                .unwrap()
+                .collect::<Vec<&SymbolTableEntry>>(),
+            vec![
+                &SymbolTableEntry {
+                    symbol_name: b"bar".to_vec(),
+                    file_offset: 116,
+                },
+                &SymbolTableEntry {
+                    symbol_name: b"bazz".to_vec(),
+                    file_offset: 116,
+                },
+                &SymbolTableEntry {
+                    symbol_name: b"aaa".to_vec(),
+                    file_offset: 178,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn build_bsd_archive_with_symbol_table() {
         let mut symbol_table = BTreeMap::new();
         symbol_table
             .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
         symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
-        let mut builder = Builder::new(
-            Cursor::new(Vec::new()),
-            symbol_table,
-        )
-        .unwrap();
+        let mut builder =
+            Builder::new(Cursor::new(Vec::new()), symbol_table).unwrap();
         builder
             .append(&Header::new(b"foo".to_vec(), 1), &mut (&[b'?'] as &[u8]))
             .expect("add file");

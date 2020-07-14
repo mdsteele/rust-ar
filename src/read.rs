@@ -18,6 +18,11 @@ fn read_be_u32(r: &mut impl io::Read) -> io::Result<u32> {
     r.read_exact(&mut buf).map(|()| u32::from_be_bytes(buf))
 }
 
+fn read_be_u64(r: &mut impl io::Read) -> io::Result<u64> {
+    let mut buf = [0; 8];
+    r.read_exact(&mut buf).map(|()| u64::from_be_bytes(buf))
+}
+
 // ========================================================================= //
 
 impl Header {
@@ -60,7 +65,9 @@ impl Header {
         // Parse GNU style special identifiers
         if *variant != Variant::BSD && identifier.starts_with(b"/") {
             *variant = Variant::GNU;
-            if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes() {
+            if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+                || identifier == GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID.as_bytes()
+            {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             } else if identifier == GNU_NAME_TABLE_ID.as_bytes() {
@@ -214,6 +221,7 @@ struct HeaderAndLocation {
 pub struct Archive<R: Read> {
     reader: R,
     variant: Variant,
+    symbol_table_variant: Option<SymbolTableVariant>,
     name_table: Vec<u8>,
     entry_headers: Vec<HeaderAndLocation>,
     new_entry_start: u64,
@@ -233,6 +241,7 @@ impl<R: Read> Archive<R> {
         Archive {
             reader,
             variant: Variant::Common,
+            symbol_table_variant: None,
             name_table: Vec::new(),
             entry_headers: Vec::new(),
             new_entry_start: GLOBAL_HEADER_LEN as u64,
@@ -262,17 +271,30 @@ impl<R: Read> Archive<R> {
             && identifier == GNU_NAME_TABLE_ID.as_bytes()
     }
 
-    fn is_symbol_lookup_table_id(&self, identifier: &[u8]) -> bool {
+    fn is_symbol_lookup_table_id(
+        &self,
+        identifier: &[u8],
+    ) -> Option<SymbolTableVariant> {
         match self.variant {
-            Variant::Common => false,
-            Variant::BSD => {
-                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+            Variant::BSD
+                if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
                     || identifier
-                        == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+                        == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes() =>
+            {
+                Some(SymbolTableVariant::BSD)
             }
-            Variant::GNU => {
-                identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
+            Variant::GNU
+                if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes() =>
+            {
+                Some(SymbolTableVariant::GNU)
             }
+            Variant::GNU
+                if identifier
+                    == GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID.as_bytes() =>
+            {
+                Some(SymbolTableVariant::GNU64BIT)
+            }
+            _ => None,
         }
     }
 
@@ -355,7 +377,16 @@ impl<R: Read> Archive<R> {
                     if self.is_name_table_id(header.identifier()) {
                         continue;
                     }
-                    if self.is_symbol_lookup_table_id(header.identifier()) {
+                    if let Some(symbol_table_variant) =
+                        self.is_symbol_lookup_table_id(header.identifier())
+                    {
+                        if self.symbol_table_variant.is_some() {
+                            return Some(Err(Error::new(
+                                ErrorKind::InvalidData,
+                                "Found more than one symbol table",
+                            )));
+                        }
+                        self.symbol_table_variant = Some(symbol_table_variant);
                         self.symbol_table_header = Some(HeaderAndLocation {
                             header: header,
                             header_start: header_start,
@@ -412,17 +443,26 @@ impl<R: Read + Seek> Archive<R> {
                 if self.is_name_table_id(header.identifier()) {
                     continue;
                 }
-                if self.is_symbol_lookup_table_id(header.identifier()) {
+                if let Some(symbol_table_variant) =
+                    self.is_symbol_lookup_table_id(header.identifier())
+                {
+                    if self.symbol_table_variant.is_some() {
+                        return Err(Error::new(
+                            ErrorKind::InvalidData,
+                            "Found more than one symbol table",
+                        ));
+                    }
+                    self.symbol_table_variant = Some(symbol_table_variant);
                     self.symbol_table_header = Some(HeaderAndLocation {
-                        header: header,
-                        header_start: header_start,
+                        header,
+                        header_start,
                         data_start: header_start + header_len,
                     });
                     continue;
                 }
                 self.entry_headers.push(HeaderAndLocation {
-                    header: header,
-                    header_start: header_start,
+                    header,
+                    header_start,
                     data_start: header_start + header_len,
                 });
             } else {
@@ -484,58 +524,86 @@ impl<R: Read + Seek> Archive<R> {
             let mut reader = BufReader::new(
                 self.reader.by_ref().take(header_and_loc.header.size()),
             );
-            if self.variant == Variant::GNU {
-                let num_symbols = read_be_u32(&mut reader)? as usize;
-                let mut symbol_offsets =
-                    Vec::<u32>::with_capacity(num_symbols);
-                for _ in 0..num_symbols {
-                    let offset = read_be_u32(&mut reader)?;
-                    symbol_offsets.push(offset);
-                }
-                let mut symbol_table = Vec::with_capacity(num_symbols);
-                for offset in symbol_offsets.into_iter() {
-                    let mut symbol_name = Vec::<u8>::new();
-                    reader.read_until(0, &mut symbol_name)?;
-                    if symbol_name.last() == Some(&0) {
-                        symbol_name.pop();
+            match self.symbol_table_variant {
+                None => unreachable!(),
+                Some(SymbolTableVariant::GNU) => {
+                    let num_symbols = read_be_u32(&mut reader)? as usize;
+                    let mut symbol_offsets =
+                        Vec::<u32>::with_capacity(num_symbols);
+                    for _ in 0..num_symbols {
+                        let offset = read_be_u32(&mut reader)?;
+                        symbol_offsets.push(offset);
                     }
-                    symbol_name.shrink_to_fit();
-                    symbol_table.push(SymbolTableEntry {
-                        symbol_name,
-                        file_offset: offset as u64,
-                    });
+                    let mut symbol_table = Vec::with_capacity(num_symbols);
+                    for offset in symbol_offsets.into_iter() {
+                        let mut symbol_name = Vec::<u8>::new();
+                        reader.read_until(0, &mut symbol_name)?;
+                        if symbol_name.last() == Some(&0) {
+                            symbol_name.pop();
+                        }
+                        symbol_name.shrink_to_fit();
+                        symbol_table.push(SymbolTableEntry {
+                            symbol_name,
+                            file_offset: offset as u64,
+                        });
+                    }
+                    self.symbol_table = Some(symbol_table);
                 }
-                self.symbol_table = Some(symbol_table);
-            } else {
-                let num_symbols = (read_le_u32(&mut reader)? / 8) as usize;
-                let mut symbol_offsets =
-                    Vec::<(u32, u32)>::with_capacity(num_symbols);
-                for _ in 0..num_symbols {
-                    let str_offset = read_le_u32(&mut reader)?;
-                    let file_offset = read_le_u32(&mut reader)?;
-                    symbol_offsets.push((str_offset, file_offset));
+                Some(SymbolTableVariant::GNU64BIT) => {
+                    let num_symbols = read_be_u64(&mut reader)? as usize;
+                    let mut symbol_offsets =
+                        Vec::<u64>::with_capacity(num_symbols);
+                    for _ in 0..num_symbols {
+                        let offset = read_be_u64(&mut reader)?;
+                        symbol_offsets.push(offset);
+                    }
+                    let mut symbol_table = Vec::with_capacity(num_symbols);
+                    for offset in symbol_offsets.into_iter() {
+                        let mut symbol_name = Vec::<u8>::new();
+                        reader.read_until(0, &mut symbol_name)?;
+                        if symbol_name.last() == Some(&0) {
+                            symbol_name.pop();
+                        }
+                        symbol_name.shrink_to_fit();
+                        symbol_table.push(SymbolTableEntry {
+                            symbol_name,
+                            file_offset: offset,
+                        });
+                    }
+                    self.symbol_table = Some(symbol_table);
                 }
-                let str_table_len = read_le_u32(&mut reader)?;
-                let mut str_table_data = vec![0u8; str_table_len as usize];
-                reader.read_exact(&mut str_table_data).map_err(|err| {
-                    annotate(err, "failed to read string table")
-                })?;
-                let mut symbol_table = Vec::with_capacity(num_symbols);
-                for (str_start, file_offset) in symbol_offsets.into_iter() {
-                    let str_start = str_start as usize;
-                    let mut str_end = str_start;
-                    while str_end < str_table_data.len()
-                        && str_table_data[str_end] != 0u8
+                Some(SymbolTableVariant::BSD) => {
+                    let num_symbols = (read_le_u32(&mut reader)? / 8) as usize;
+                    let mut symbol_offsets =
+                        Vec::<(u32, u32)>::with_capacity(num_symbols);
+                    for _ in 0..num_symbols {
+                        let str_offset = read_le_u32(&mut reader)?;
+                        let file_offset = read_le_u32(&mut reader)?;
+                        symbol_offsets.push((str_offset, file_offset));
+                    }
+                    let str_table_len = read_le_u32(&mut reader)?;
+                    let mut str_table_data = vec![0u8; str_table_len as usize];
+                    reader.read_exact(&mut str_table_data).map_err(|err| {
+                        annotate(err, "failed to read string table")
+                    })?;
+                    let mut symbol_table = Vec::with_capacity(num_symbols);
+                    for (str_start, file_offset) in symbol_offsets.into_iter()
                     {
-                        str_end += 1;
+                        let str_start = str_start as usize;
+                        let mut str_end = str_start;
+                        while str_end < str_table_data.len()
+                            && str_table_data[str_end] != 0u8
+                        {
+                            str_end += 1;
+                        }
+                        let string = &str_table_data[str_start..str_end];
+                        symbol_table.push(SymbolTableEntry {
+                            symbol_name: string.to_vec(),
+                            file_offset: file_offset as u64,
+                        });
                     }
-                    let string = &str_table_data[str_start..str_end];
-                    symbol_table.push(SymbolTableEntry {
-                        symbol_name: string.to_vec(),
-                        file_offset: file_offset as u64,
-                    });
+                    self.symbol_table = Some(symbol_table);
                 }
-                self.symbol_table = Some(symbol_table);
             }
         }
         // Resume our previous position in the file.
