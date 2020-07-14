@@ -6,7 +6,7 @@
 #[macro_export]
 #[doc(hidden)]
 macro_rules! err {
-    ($fmt: expr, $($arg:tt)*) => ( Error::new(ErrorKind::InvalidInput, format!($fmt, $($arg)*)) );
+    ($fmt: expr, $($arg:tt)*) => ( std::io::Error::new(std::io::ErrorKind::InvalidInput, format!($fmt, $($arg)*)) );
     ($msg: literal) => ( Error::new(ErrorKind::InvalidInput, $msg) );
 }
 

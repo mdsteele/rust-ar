@@ -200,5 +200,61 @@ impl Header {
 
     /// Sets the length of the file, in bytes.
     pub fn set_size(&mut self, size: u64) { self.size = size; }
+
+    /// Validates the header is somewhat sane against the specification.
+    pub fn validate(&self) -> std::io::Result<()> {
+        ensure!(num_digits(self.mtime, 10) <= 12, "MTime `{}` > 12 digits", self.mtime);
+        ensure!(num_digits(self.uid, 10) <= 6, "UID `{}` > 6 digits", self.uid);
+        ensure!(num_digits(self.gid, 10) <= 6, "GID `{}` > 6 digits", self.gid);
+        ensure!(num_digits(self.mode, 8) <= 8, "Mode `{:o}` > 8 octal digits", self.mode);
+        Ok(())
+    }
 }
+
+#[inline]
+fn num_digits<N: Into<u64>>(val: N, radix: u64) -> u64 {
+    let mut val = val.into();
+    if val == 0 {
+        return 1;
+    }
+
+    let mut digits = 0;
+    while val != 0 {
+        val /= radix;
+        digits += 1;
+    }
+    digits
+}
+
 // ========================================================================= //
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::io::ErrorKind;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn num_digits_valid(raw in 0..std::u64::MAX) {
+            assert_eq!(num_digits(raw, 10), format!("{}", raw).len() as u64);
+            assert_eq!(num_digits(raw, 8), format!("{:o}", raw).len() as u64);
+            assert_eq!(num_digits(raw, 16), format!("{:x}", raw).len() as u64);
+        }
+    }
+
+    #[test]
+    fn header_limits() {
+        let assert_err = |mutator: fn(&mut Header) -> (), msg: &str| {
+            let mut header = Header::new(b"some ident".to_vec(), 12345);
+            mutator(&mut header);
+            let err = header.validate().expect_err("No error produced!");
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+            assert_eq!(&err.into_inner().unwrap().to_string(), msg);
+        };
+
+        assert_err(|hdr| hdr.set_mtime(1234567890123), "MTime `1234567890123` > 12 digits");
+        assert_err(|hdr| hdr.set_uid(1234567), "UID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_gid(1234567), "GID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_mode(0o123456712), "Mode `123456712` > 8 octal digits");
+    }
+}
