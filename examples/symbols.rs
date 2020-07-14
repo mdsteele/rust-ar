@@ -26,6 +26,6 @@ fn main() {
     let mut archive = ar::Archive::new(input_file);
 
     for symbol in archive.symbols().expect("failed to parse symbols") {
-        println!("{}", symbol.name().expect("symbol name is not UTF-8"));
+        println!("{}", String::from_utf8_lossy(symbol.raw_name());
     }
 }
