@@ -223,7 +223,7 @@ impl GnuBuilder {
             0..=GNU_STD_SYMTAB_LIMIT => Ok(MetadataParams {
                 kind: SymbolTableVariant::GNU,
                 name: GNU_SYMBOL_LOOKUP_TABLE_ID,
-                offset: dbg!(metadata_size),
+                offset: metadata_size,
                 wordsize: GNU_STD_SYMTAB_PTR,
             }),
             _ => {
@@ -322,8 +322,7 @@ impl BaseBuilder for GnuBuilder {
             // Write the offsets taking care to adjust for the final location
             self.symbols
                 .iter()
-                .map(|x| dbg!(x))
-                .map(|x| dbg!(x + meta_params.offset))
+                .map(|x| x + meta_params.offset)
                 .try_for_each(symtab_num)?;
 
             builder_sections.symtab_idents = self.symbol_names;
@@ -373,7 +372,7 @@ impl BaseBuilder for GnuBuilder {
         if self.generate_symbol_table {
             self.symbol_names.write_all(sym.as_bytes())?;
             self.symbol_names.write_all(b"\0")?;
-            dbg!(self.symbols.push(raw_offset));
+            self.symbols.push(raw_offset);
         }
 
         Ok(())
