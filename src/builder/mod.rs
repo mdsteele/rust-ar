@@ -345,11 +345,15 @@ pub(crate) mod private {
 
                     match copy_file_range(src, None, dst, None, len) {
                         Ok(bytes) => Ok(bytes as u64),
-                        Err(NixErr::Sys(errno)) => Err(Error::from_raw_os_error(errno as i32)),
-                        Err(NixErr::InvalidPath) => bail!("Invalid path"),
-                        Err(NixErr::InvalidUtf8) => bail!("Invalid utf8 for path"),
                         // If we dont get `copy_file_range` fallback to copy
                         Err(NixErr::UnsupportedOperation) => io::copy(src_file, file),
+                        Err(NixErr::Sys(errno)) => match errno {
+                            // Also fall back to copy for multi-mount copies
+                            nix::errno::Errno::EXDEV => io::copy(src_file, file),
+                            _ => Err(Error::from_raw_os_error(errno as i32)),
+                        },
+                        Err(NixErr::InvalidPath) => bail!("Invalid path"),
+                        Err(NixErr::InvalidUtf8) => bail!("Invalid utf8 for path"),
                     }
                 } else {
                     std::io::copy(src_file, file)
