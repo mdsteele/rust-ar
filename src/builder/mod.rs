@@ -8,7 +8,16 @@ pub mod gnu;
 pub use gnu::GnuBuilder;
 
 #[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::{
+    ffi::OsStrExt,
+    io::AsRawFd,
+};
+
+#[cfg(unix)]
+use nix::{
+    Error as NixErr,
+    fcntl::copy_file_range
+};
 
 #[cfg(windows)]
 use std::os::windows::ffi::OsStrExt;
@@ -333,11 +342,6 @@ pub(crate) mod private {
                 ArchiveBuilderData::Inline(data) => std::io::copy(data, file),
                 ArchiveBuilderData::Spilled(src_file) => if cfg!(unix) {
                     // On unix try an optimised `splice` styled copy
-                    use std::os::unix::io::AsRawFd;
-                    use nix::{
-                        Error as NixErr,
-                        fcntl::copy_file_range
-                    };
 
                     let src = src_file.as_raw_fd();
                     let dst = file.as_raw_fd();
