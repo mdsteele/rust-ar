@@ -169,7 +169,7 @@ impl Header {
             mtime: 0,
             uid: 0,
             gid: 0,
-            mode:0o644,
+            mode: 0o644,
             size,
             identifier,
         }
