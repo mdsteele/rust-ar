@@ -31,7 +31,7 @@
 //!
 //! Data is emplaced inline directly after a header record, no manipulations are done on data
 //! stored in an archive, and there are no restrictions on what data can be stored in an archive.
-//! Data might have a padding character (`\n`) added if the entity would be on an odd byte
+//! Data has a padding character (`\n`) added if the entity would be on an odd byte
 //! boundary, but this is purely an internal detail of the format and not visible in any metadata.
 //!
 //! **Header**
