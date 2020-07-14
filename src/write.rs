@@ -46,6 +46,7 @@ impl Header {
 
     fn write_gnu<W>(
         &self,
+        deterministic: bool,
         writer: &mut W,
         names: &HashMap<Vec<u8>, usize>,
     ) -> Result<()>
@@ -60,11 +61,21 @@ impl Header {
             writer.write_all(b"/")?;
             writer.write_all(&vec![b' '; 15 - self.identifier.len()])?;
         }
-        write!(
-            writer,
-            "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-            self.mtime, self.uid, self.gid, self.mode, self.size
-        )?;
+
+        if deterministic {
+            write!(
+                writer,
+                "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                0, 0, 0, 0o644, self.size
+            )?;
+        } else {
+            write!(
+                writer,
+                "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                self.mtime, self.uid, self.gid, self.mode, self.size
+            )?;
+        }
+
         Ok(())
     }
 }
@@ -235,10 +246,33 @@ impl<W: Write + Seek> Builder<W> {
 // ========================================================================= //
 
 /// The format of the GNU symbol table.
-#[allow(missing_docs)]
+#[derive(Copy, Clone)]
 pub enum GnuSymbolTableFormat {
+    /// A 32bit table (`/` in archive entry)
+    ///
+    /// This table is used for archives where the entire archive fits inside 4gb.
     Size32,
+
+    /// A 64bit offset table (`/SYM64` in archive entry)
+    ///
+    /// This table is used for archives that will be larger than 4gb.
     Size64,
+}
+
+impl GnuSymbolTableFormat {
+    fn wordsize(self) -> usize {
+        match self {
+            Self::Size32 => std::mem::size_of::<u32>(),
+            Self::Size64 => std::mem::size_of::<u64>(),
+        }
+    }
+
+    fn entry_name(self) -> &'static str {
+        match self {
+            Self::Size32 => GNU_SYMBOL_LOOKUP_TABLE_ID,
+            Self::Size64 => GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID,
+        }
+    }
 }
 
 /// A structure for building GNU-variant archives (the archive format typically
@@ -248,6 +282,7 @@ pub enum GnuSymbolTableFormat {
 /// arbitrary writer.
 pub struct GnuBuilder<W: Write + Seek> {
     writer: W,
+    deterministic: bool,
     short_names: HashSet<Vec<u8>>,
     long_names: HashMap<Vec<u8>, usize>,
     symtab_format: GnuSymbolTableFormat,
@@ -261,6 +296,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
     /// archive.
     pub fn new(
         mut writer: W,
+        deterministic: bool,
         identifiers: Vec<Vec<u8>>,
         symtab_format: GnuSymbolTableFormat,
         symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
@@ -287,10 +323,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
         let mut symbol_table_relocations: HashMap<Vec<u8>, Vec<u64>> =
             HashMap::with_capacity(symbol_table.len());
         if !symbol_table.is_empty() {
-            let int_size = match symtab_format {
-                GnuSymbolTableFormat::Size32 => 4,
-                GnuSymbolTableFormat::Size64 => 8,
-            };
+            let wordsize = symtab_format.wordsize();
             let symbol_count: usize = symbol_table
                 .iter()
                 .map(|(_identifier, symbols)| symbols.len())
@@ -298,23 +331,14 @@ impl<W: Write + Seek> GnuBuilder<W> {
             let symbols = symbol_table
                 .iter()
                 .flat_map(|(_identifier, symbols)| symbols);
-            let mut symbol_table_size: usize = int_size
-                + int_size * symbol_count
+            let mut symbol_table_size: usize = wordsize
+                + wordsize * symbol_count
                 + symbols.map(|symbol| symbol.len() + 1).sum::<usize>();
             let symbol_table_needs_padding = symbol_table_size % 2 != 0;
             if symbol_table_needs_padding {
                 symbol_table_size += 3; // ` /\n`
             }
-            write!(
-                writer,
-                "{:<48}{:<10}`\n",
-                match symtab_format {
-                    GnuSymbolTableFormat::Size32 => GNU_SYMBOL_LOOKUP_TABLE_ID,
-                    GnuSymbolTableFormat::Size64 =>
-                        GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID,
-                },
-                symbol_table_size
-            )?;
+            write!(writer, "{:<48}{:<10}`\n", symtab_format.entry_name(), symbol_table_size)?;
             match symtab_format {
                 GnuSymbolTableFormat::Size32 => {
                     writer.write_all(&u32::to_be_bytes(
@@ -386,6 +410,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
 
         Ok(GnuBuilder {
             writer,
+            deterministic,
             short_names,
             long_names,
             symtab_format,
@@ -443,7 +468,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
             self.writer.seek(io::SeekFrom::Start(entry_offset))?;
         }
 
-        header.write_gnu(&mut self.writer, &self.long_names)?;
+        header.write_gnu(self.deterministic, &mut self.writer, &self.long_names)?;
         let actual_size = io::copy(&mut data, &mut self.writer)?;
         if actual_size != header.size() {
             let msg = format!(
@@ -591,6 +616,7 @@ mod tests {
         let names = vec![b"baz.txt".to_vec(), b"foo.txt".to_vec()];
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
+            false,
             names,
             GnuSymbolTableFormat::Size32,
             BTreeMap::new(),
@@ -622,6 +648,7 @@ mod tests {
         ];
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
+            false,
             names,
             GnuSymbolTableFormat::Size32,
             BTreeMap::new(),
@@ -658,6 +685,7 @@ mod tests {
         let names = vec![b"foo bar".to_vec()];
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
+            false,
             names,
             GnuSymbolTableFormat::Size32,
             BTreeMap::new(),
@@ -682,6 +710,7 @@ mod tests {
         let names = vec![b"foo".to_vec()];
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
+            false,
             names,
             GnuSymbolTableFormat::Size32,
             BTreeMap::new(),
@@ -703,6 +732,7 @@ mod tests {
             ];
             let mut builder = GnuBuilder::new(
                 &mut buffer,
+                false,
                 filenames.clone(),
                 GnuSymbolTableFormat::Size32,
                 BTreeMap::new(),
@@ -732,6 +762,7 @@ mod tests {
         symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
+            false,
             vec![b"foo".to_vec(), b"foobar".to_vec()],
             GnuSymbolTableFormat::Size32,
             symbol_table,
@@ -791,6 +822,7 @@ mod tests {
         symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
         let mut builder = GnuBuilder::new(
             Cursor::new(Vec::new()),
+            false,
             vec![b"foo".to_vec(), b"foobar".to_vec()],
             GnuSymbolTableFormat::Size64,
             symbol_table,
