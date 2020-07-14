@@ -21,7 +21,7 @@
 //!
 //! Most tools outside of BSD targets tend to use GNU format as the defacto standard, and it is
 //! well-supported by LLVM and GNU toolchains. More subtle variants of this format exist such as
-//! the unimplemented Microsoft extended ECOFF archive.
+//! the Microsoft extended ECOFF archive, which is not implemented by rust-ar.
 //!
 //! # Layout
 //! Except where indicated, the metadata for the archive is typically encoded as ascii strings. All
