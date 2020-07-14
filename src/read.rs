@@ -174,6 +174,7 @@ fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
             return Ok(value);
         }
     }
+
     let msg = format!(
         "Invalid {} field in entry header ({:?})",
         field_name,
@@ -491,10 +492,8 @@ impl<R: Read + Seek> Archive<R> {
     /// an error if the index is not less than the result of `count_entries()`.
     pub fn jump_to_entry(&mut self, index: usize) -> io::Result<Entry<R>> {
         self.scan_if_necessary()?;
-        if index >= self.entry_headers.len() {
-            let msg = "Entry index out of bounds";
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
-        }
+        ensure!(index < self.entry_headers.len(), "Entry index out of bounds");
+
         let offset = self.entry_headers[index].data_start;
         self.reader.seek(SeekFrom::Start(offset))?;
         let header = &self.entry_headers[index].header;
@@ -672,20 +671,10 @@ impl<'a, R: 'a + Read + Seek> Seek for Entry<'a, R> {
             SeekFrom::Current(delta) => delta,
         };
         let new_position = self.position as i64 + delta;
-        if new_position < 0 {
-            let msg = format!(
-                "Invalid seek to negative position ({})",
-                new_position
-            );
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
-        }
+        ensure!(new_position >= 0, "Invalid seek to negative position ({})", new_position);
         let new_position = new_position as u64;
         if new_position > self.length {
-            let msg = format!(
-                "Invalid seek to position past end of entry ({} vs. {})",
-                new_position, self.length
-            );
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
+            bail!("Invalid seek to position past end of entry ({} vs. {})", new_position, self.length);
         }
         self.reader.seek(SeekFrom::Current(delta))?;
         self.position = new_position;

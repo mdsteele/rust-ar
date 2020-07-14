@@ -69,6 +69,7 @@
 
 mod read;
 mod write;
+mod error;
 
 pub use read::{Archive, Entry, SymbolTableEntry, Symbols};
 pub use write::{Builder, GnuBuilder, GnuSymbolTableFormat};

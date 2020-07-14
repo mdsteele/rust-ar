@@ -125,16 +125,10 @@ impl<W: Write + Seek> Builder<W> {
             )?;
             writer.write_all(&*b"__.SYMDEF\0\0\0")?;
             writer.write_all(&u32::to_le_bytes(
-                8 * u32::try_from(symbol_count).map_err(|_| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "More than 4 billion symbols??? There are {}",
-                            symbol_count
-                        ),
-                    )
-                })?,
-            ))?;
+                8 * u32::try_from(symbol_count)
+                    .map_err(|_| err!("Too many symbols `{}`", symbol_count))?
+                ),
+            )?;
             let mut str_offset = 0;
             for (identifier, symbol) in
                 symbol_table.iter().flat_map(|(identifier, symbols)| {
@@ -151,12 +145,9 @@ impl<W: Write + Seek> Builder<W> {
             }
             writer.write_all(&u32::to_le_bytes(
                 u32::try_from(total_symbol_size).map_err(|_| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "More than 4GB of symbol strings??? There are 0x{:x} bytes",
-                            total_symbol_size
-                        ),
+                    err!(
+                        "Total symbol name size too much. `{:#x}` bytes",
+                        total_symbol_size
                     )
                 })?,
             ))?;
@@ -193,7 +184,7 @@ impl<W: Write + Seek> Builder<W> {
             let entry_offset = self.writer.seek(io::SeekFrom::Current(0))?;
             let entry_offset_bytes = u32::to_le_bytes(
                 u32::try_from(entry_offset)
-                    .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("Archive is bigger than 4GB. It is already 0x{:x} bytes.", entry_offset)))?
+                    .map_err(|_| err!("Archive larger than 4GB"))?
             );
             for &reloc_offset in relocs {
                 self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
@@ -205,13 +196,8 @@ impl<W: Write + Seek> Builder<W> {
         header.write(&mut self.writer)?;
         let actual_size = io::copy(&mut data, &mut self.writer)?;
         if actual_size != header.size() {
-            let msg = format!(
-                "Wrong file size (header.size() = {}, actual \
-                               size was {})",
-                header.size(),
-                actual_size
-            );
-            return Err(Error::new(ErrorKind::InvalidData, msg));
+            bail!("Wrong file size (header.size() = `{}`, actual = `{}`)",
+                  header.size(), actual_size)
         }
         if actual_size % 2 != 0 {
             self.writer.write_all(&['\n' as u8])?;
@@ -223,8 +209,7 @@ impl<W: Write + Seek> Builder<W> {
     /// name as its identifier.
     pub fn append_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let name: &OsStr = path.as_ref().file_name().ok_or_else(|| {
-            let msg = "Given path doesn't have a file name";
-            Error::new(ErrorKind::InvalidInput, msg)
+            err!("Given path doesn't have a file name")
         })?;
         let identifier = osstr_to_bytes(name)?;
         let mut file = File::open(&path)?;
@@ -342,15 +327,8 @@ impl<W: Write + Seek> GnuBuilder<W> {
             match symtab_format {
                 GnuSymbolTableFormat::Size32 => {
                     writer.write_all(&u32::to_be_bytes(
-                        u32::try_from(symbol_count).map_err(|_| {
-                            Error::new(
-                                ErrorKind::InvalidInput,
-                                format!(
-                                    "More than 4 billion symbols for a 32bit symbol table, there are {} symbols.",
-                                    symbol_count
-                                ),
-                            )
-                        })?,
+                        u32::try_from(symbol_count)
+                        .map_err(|_| err!("Too many symbols for 32bit table `{}`", symbol_count))?
                     ))?;
                 }
                 GnuSymbolTableFormat::Size64 => {
@@ -433,14 +411,10 @@ impl<W: Write + Seek> GnuBuilder<W> {
         } else {
             self.short_names.contains(header.identifier())
         };
-        if !has_name {
-            let msg = format!(
-                "Identifier {:?} was not in the list of \
-                 identifiers passed to GnuBuilder::new()",
-                String::from_utf8_lossy(header.identifier())
-            );
-            return Err(Error::new(ErrorKind::InvalidInput, msg));
-        }
+
+        ensure!(has_name,
+            "Identifier `{:?}` was not in the list of identifiers passed to GnuBuilder::new()",
+            String::from_utf8_lossy(header.identifier()));
 
         if let Some(relocs) =
             self.symbol_table_relocations.get(header.identifier())
@@ -450,7 +424,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
                 GnuSymbolTableFormat::Size32 => {
                     let entry_offset_bytes = u32::to_be_bytes(
                         u32::try_from(entry_offset)
-                            .map_err(|_| Error::new(ErrorKind::InvalidInput, format!("Archive is bigger than 4GB. It is already 0x{:x} bytes.", entry_offset)))?
+                            .map_err(|_| err!("Archive larger than 4GB"))?
                     );
                     for &reloc_offset in relocs {
                         self.writer.seek(io::SeekFrom::Start(reloc_offset))?;
@@ -471,13 +445,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
         header.write_gnu(self.deterministic, &mut self.writer, &self.long_names)?;
         let actual_size = io::copy(&mut data, &mut self.writer)?;
         if actual_size != header.size() {
-            let msg = format!(
-                "Wrong file size (header.size() = {}, actual \
-                               size was {})",
-                header.size(),
-                actual_size
-            );
-            return Err(Error::new(ErrorKind::InvalidData, msg));
+            bail!("Wrong file size (header.size() = `{}`, actual = `{}`)", header.size(), actual_size);
         }
         if actual_size % 2 != 0 {
             self.writer.write_all(&['\n' as u8])?;
@@ -490,8 +458,7 @@ impl<W: Write + Seek> GnuBuilder<W> {
     /// name as its identifier.
     pub fn append_path<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let name: &OsStr = path.as_ref().file_name().ok_or_else(|| {
-            let msg = "Given path doesn't have a file name";
-            Error::new(ErrorKind::InvalidInput, msg)
+            err!("Given path doesn't have a file name")
         })?;
         let identifier = osstr_to_bytes(name)?;
         let mut file = File::open(&path)?;
@@ -530,10 +497,9 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
 
 #[cfg(not(any(unix, windows)))]
 fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
-    let utf8: &str = string.to_str().ok_or_else(|| {
-        Error::new(ErrorKind::InvalidData, "Non-UTF8 file name")
-    })?;
-    Ok(utf8.as_bytes().to_vec())
+    string.to_str()
+        .map(|x| x.as_bytes.to_vec())
+        .ok_or_else(|| err!("Non-UTF8 file name"))
 }
 
 // ========================================================================= //
@@ -703,8 +669,7 @@ mod tests {
 
     #[test]
     #[should_panic(
-        expected = "Identifier \\\"bar\\\" was not in the list of \
-                               identifiers passed to GnuBuilder::new()"
+        expected = r#"Identifier `\"bar\"` was not in the list of identifiers passed to GnuBuilder::new()"#
     )]
     fn build_gnu_archive_with_unexpected_identifier() {
         let names = vec![b"foo".to_vec()];
