@@ -311,7 +311,7 @@ impl BaseBuilder for GnuBuilder {
 
             let mut symtab_num = |n: u64| {
                 match meta_params.kind {
-                    SymbolTableVariant::GNU => sym_ptrs.write_all(&(n as u32).to_be_bytes()),
+                    SymbolTableVariant::GNU => sym_ptrs.write_all(&u32::try_from(n).expect("variant should be GNU64BIT when n overflows u32").to_be_bytes()),
                     SymbolTableVariant::GNU64BIT => sym_ptrs.write_all(&n.to_be_bytes()),
                     _ => panic!("Gnu archive builder attempted to create invalid sym-table variant"),
                 }
