@@ -17,6 +17,7 @@ use super::*;
 
 impl Header {
     fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
+        self.validate()?;
         if self.identifier.len() > 16 || self.identifier.contains(&b' ') {
             let padding_length = (4 - self.identifier.len() % 4) % 4;
             let padded_length = self.identifier.len() + padding_length;
@@ -53,6 +54,7 @@ impl Header {
     where
         W: Write,
     {
+        self.validate()?;
         if self.identifier.len() > 15 {
             let offset = names[&self.identifier];
             write!(writer, "/{:<15}", offset)?;
@@ -350,8 +352,9 @@ impl<W: Write + Seek> GnuBuilder<W> {
                     GnuSymbolTableFormat::Size32 => {
                         writer.write_all(&u32::to_be_bytes(0xcafebabe))?
                     }
-                    GnuSymbolTableFormat::Size64 => writer
-                        .write_all(&u64::to_be_bytes(0xcafebabe_deadbeef))?,
+                    GnuSymbolTableFormat::Size64 => {
+                        writer.write_all(&u64::to_be_bytes(0xcafebabe_deadbeef))?
+                    },
                 }
             }
             for symbol in symbol_table
@@ -525,7 +528,7 @@ mod tests {
 
     use std::{
         collections::BTreeMap,
-        io::Cursor,
+        io::{Cursor, ErrorKind},
         str
     };
 
@@ -908,6 +911,40 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn build_gnu_archive_with_bad_headers() {
+        let assert_err = |mutator: fn(&mut Header) -> (), msg: &str| {
+            let mut builder = GnuBuilder::new(Cursor::new(vec![]), false, vec![b"ident".to_vec()], GnuSymbolTableFormat::Size32, BTreeMap::new()).unwrap();
+            let mut header = Header::new(b"ident".to_vec(), 12345);
+            mutator(&mut header);
+            let err = builder.append(&header, Cursor::new(vec![])).expect_err("No error produced!");
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+            assert_eq!(&err.into_inner().unwrap().to_string(), msg);
+        };
+
+        assert_err(|hdr| hdr.set_mtime(1234567890123), "MTime `1234567890123` > 12 digits");
+        assert_err(|hdr| hdr.set_uid(1234567), "UID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_gid(1234567), "GID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_mode(0o123456712), "Mode `123456712` > 8 octal digits");
+    }
+
+    #[test]
+    fn build_bsd_archive_with_bad_headers() {
+        let assert_err = |mutator: fn(&mut Header) -> (), msg: &str| {
+            let mut builder = Builder::new(Cursor::new(vec![]), BTreeMap::new()).unwrap();
+            let mut header = Header::new(b"ident".to_vec(), 12345);
+            mutator(&mut header);
+            let err = builder.append(&header, Cursor::new(vec![])).expect_err("No error produced!");
+            assert_eq!(err.kind(), ErrorKind::InvalidInput);
+            assert_eq!(&err.into_inner().unwrap().to_string(), msg);
+        };
+
+        assert_err(|hdr| hdr.set_mtime(1234567890123), "MTime `1234567890123` > 12 digits");
+        assert_err(|hdr| hdr.set_uid(1234567), "UID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_gid(1234567), "GID `1234567` > 6 digits");
+        assert_err(|hdr| hdr.set_mode(0o123456712), "Mode `123456712` > 8 octal digits");
     }
 
     fn idents<'a>(entries: impl Iterator<Item=&'a HeaderAndData>) -> Vec<Vec<u8>> {
