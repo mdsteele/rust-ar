@@ -531,7 +531,7 @@ mod tests {
         !<arch>\n\
         foo.txt         1487552916  501   20    100644  7         `\n\
         foobar\n\n\
-        baz.txt         0           0     0     0       4         `\n\
+        baz.txt         0           0     0     644     4         `\n\
         baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
@@ -558,7 +558,7 @@ mod tests {
         !<arch>\n\
         #1/32           1487552916  501   20    100644  39        `\n\
         this_is_a_very_long_filename.txtfoobar\n\n\
-        #1/44           0           0     0     0       48        `\n\
+        #1/44           0           0     0     644     48        `\n\
         and_this_is_another_very_long_filename.txt\x00\x00baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
@@ -572,7 +572,7 @@ mod tests {
         let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
-        #1/8            0           0     0     0       12        `\n\
+        #1/8            0           0     0     644     12        `\n\
         foo bar\x00baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
@@ -601,7 +601,7 @@ mod tests {
         !<arch>\n\
         foo.txt/        1487552916  501   20    100644  7         `\n\
         foobar\n\n\
-        baz.txt/        0           0     0     0       4         `\n\
+        baz.txt/        0           0     0     644     4         `\n\
         baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
@@ -641,7 +641,7 @@ mod tests {
         and_this_is_another_very_long_filename.txt/\n\
         /0              1487552916  501   20    100644  7         `\n\
         foobar\n\n\
-        /34             0           0     0     0       4         `\n\
+        /34             0           0     0     644     4         `\n\
         baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
@@ -662,7 +662,7 @@ mod tests {
         let actual = builder.into_inner().unwrap().into_inner();
         let expected = "\
         !<arch>\n\
-        foo bar/        0           0     0     0       4         `\n\
+        foo bar/        0           0     0     644     4         `\n\
         baz\n";
         assert_eq!(str::from_utf8(&actual).unwrap(), expected);
     }
@@ -750,9 +750,9 @@ mod tests {
         \0\0\0d\
         \0\0\0�\
         bar\0bazz\0aaa\0 /\n\
-        foo/            0           0     0     0       1         `\n\
+        foo/            0           0     0     644     1         `\n\
         ?\n\
-        foobar/         0           0     0     0       1         `\n\
+        foobar/         0           0     0     644     1         `\n\
         !\n";
         assert_eq!(String::from_utf8_lossy(&actual), expected);
 
@@ -810,9 +810,9 @@ mod tests {
         \0\0\0\0\0\0\0t\
         \0\0\0\0\0\0\0�\
         bar\0bazz\0aaa\0 /\n\
-        foo/            0           0     0     0       1         `\n\
+        foo/            0           0     0     644     1         `\n\
         ?\n\
-        foobar/         0           0     0     0       1         `\n\
+        foobar/         0           0     0     644     1         `\n\
         !\n";
         assert_eq!(String::from_utf8_lossy(&actual), expected);
 
@@ -866,9 +866,9 @@ mod tests {
         \x09\0\0\0�\0\0\0\
         \x0D\0\0\0\
         bar\0bazz\0aaa\0 /\n\
-        foo             0           0     0     0       1         `\n\
+        foo             0           0     0     644     1         `\n\
         ?\n\
-        foobar          0           0     0     0       1         `\n\
+        foobar          0           0     0     644     1         `\n\
         !\n";
         assert_eq!(String::from_utf8_lossy(&actual), expected);
 
