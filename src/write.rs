@@ -262,11 +262,100 @@ impl GnuSymbolTableFormat {
     }
 }
 
-/// A structure for building GNU-variant archives (the archive format typically
-/// used on e.g. GNU/Linux and Windows systems).
+/// Builder for GNU archive format
 ///
-/// This structure has methods for building up an archive from scratch into any
-/// arbitrary writer.
+/// # TL;DR
+/// The GNU format is a backwards incompatible archive format that diverges from the legacy Unix
+/// archive format in the following significant ways:
+///
+/// 1) It can contain a binary symbol table that needs to be the first member of the archive.
+///    This table can contain either 32bit or 64bit offsets pointing to the entities that symbols
+///    relate to.
+///
+///    Unlike the BSD tables the GNU tables are _somewhat_ more formally defined and are simpler in
+///    construction.
+///
+/// 2) The handling of extended strings is done with a string lookup table (either as the first of
+///    second member) which is little more than a large string array.
+///
+/// 3) Extensions exist to create a rare format known as a thin-archive.
+///
+/// 4) GNU archives have a formal [deterministic mode](#deterministic-archives) that is important
+///    for build systems and toolchains.
+///
+/// Most tools outside of BSD targets tend to use GNU format as the defacto standard, and it is
+/// well-supported by LLVM and GNU toolchains. More subtle variants of this format exist such as
+/// the unimplemented Microsoft extended ECOFF archive.
+///
+/// # Layout
+/// Except where indicated, the metadata for the archive is typically encoded as ascii strings. All
+/// ascii strings in an archive are padded to the length of the given field with ascii space `0x20`
+/// as the fill value. This gives an archive a general fixed format look if opened in a text
+/// editor.
+///
+/// Data is emplaced inline directly after a header record, no manipulations are done on data
+/// stored in an archive, and there are no restrictions on what data can be stored in an archive.
+/// Data might have a padding character (`\n`) added if the entity would be on an odd byte
+/// boundary, but this is purely an internal detail of the format and not visible in any metadata.
+///
+/// **Header**
+///
+/// | Section         | Type                |
+/// |-----------------|---------------------|
+/// | Magic signature | Literal `!<arch>\n` |
+///
+/// **Entity Header**
+///
+/// | Section | Type           | Notes                                                                                            |
+/// |---------|----------------|--------------------------------------------------------------------------------------------------|
+/// | Name    | `[u8; 16]`     | Gnu handles strings in a manner that _effectively_ reduces this to 15 bytes                      |
+/// | MTime   | `[u8; 12]`     | Seconds since the Unix epoch. Often `0` as per [deterministic archives](#deterministic-archives) |
+/// | Uid     | `[u8; 6]`      | Unix plain user id. Often `0` as per [deterministic archives](#deterministic-archives)           |
+/// | Gid     | `[u8; 6]`      | Unix plain group id. Often `0` as per [deterministic archives](#deterministic-archives)          |
+/// | Mode    | `[u8; 8]`      | Unix file mode in Octal. Often `0` as per [deterministic archives](#deterministic-archives)      |
+/// | Size    | `[u8; 10]`     | Entity data size in bytes, the size _does not reflect_ any padding                               |
+/// | End     | Literal `\`\n` | Marks the end of the entity header                                                               |
+///
+/// **Symbol table (if present)**
+///
+/// Symbol tables are prepended with an entity header, although most implementations choose to make
+/// the header all spaces in contrast to general header format for [deterministic
+/// archives](#Deterministic Archives) but with the same general effect.
+///
+/// The name for the entity for the symbol table is either `//` or `/SYM64/` dependent on if the
+/// overall size of the archive crosses the maximum addressable size allowed by 32 bits.
+///
+/// | Section  | Type              | Notes                                                   |
+/// |----------|-------------------|---------------------------------------------------------|
+/// | Num syms | `u32` / `u64`     | _Generally_ `u32` but can be `u64` for > 4Gb archives   |
+/// | Offsets  | `[u32]` / `[u64]` | Pointer from a symbol to the relevant archive entity    |
+/// | Names    | `[c_str]`         | The name of each symbol as a plain C style string array |
+///
+/// **Extended strings (if present)**
+///
+/// GNU archives generally encode names inline in the format `/some_name.o/`.
+///
+/// The bracketed `/` pairing allows GNU archives to contain embedded spaces and other metachars
+/// (excluding `/` itself).
+///
+/// If the name is _greater than_ 15 bytes it is encoded as offset number into a string table. The
+/// string table is one of the first few members in the archive and is given as strings separated
+/// by the byte sequence `[0x2F, 0x0A]` (or `\\/n` in ascii).
+/// No padding is done in the string table itself and the offset written to the entity header is zero
+/// based from the start of the string table.
+///
+/// The entity name for the string table is formatted as `/#offset`, for example, for an extended
+/// name starting at offset `4853` the value written to the entity header becomes `/#4853`
+///
+/// ## Deterministic Archives
+/// The existence of several variables in entity headers make the format poorly suited to
+/// consistent generation of archives. This confuses toolchains which may interpret frequently
+/// changing headers as a change to the overall archive and force needless recomputations.
+///
+/// As such, a backwards compatible extension exists for GNU archives where all variable fields not
+/// directly related to an entities data are set to ascii `0`. This is known as deterministic mode
+/// and is common for most modern in use unix archives (the format has long since lost its original
+/// duty as a general archive format and is now mostly used for toolchain operations).
 pub struct GnuBuilder<W: Write + Seek> {
     writer: W,
     deterministic: bool,
