@@ -71,6 +71,8 @@ mod read;
 mod write;
 mod error;
 
+#[cfg(test)] mod test_support;
+
 pub use read::{Archive, Entry, SymbolTableEntry, Symbols};
 pub use write::{Builder, GnuBuilder, GnuSymbolTableFormat};
 

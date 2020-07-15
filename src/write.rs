@@ -509,10 +509,25 @@ mod tests {
     use super::{
         Archive, Builder, GnuBuilder, GnuSymbolTableFormat, Header,
         SymbolTableEntry,
+        test_support::HeaderAndData,
     };
-    use std::collections::BTreeMap;
-    use std::io::Cursor;
-    use std::str;
+
+    use pretty_assertions::assert_eq;
+    use itertools::Itertools;
+
+    use proptest::{
+        prelude::*,
+        collection::vec as any_vec
+    };
+
+    use rand::seq::SliceRandom;
+    use rand_pcg::Pcg64Mcg;
+
+    use std::{
+        collections::BTreeMap,
+        io::Cursor,
+        str
+    };
 
     #[test]
     fn build_common_archive() {
@@ -765,15 +780,15 @@ mod tests {
             vec![
                 &SymbolTableEntry {
                     symbol_name: b"bar".to_vec(),
-                    file_offset: 100,
+                    entry_index: 0,
                 },
                 &SymbolTableEntry {
                     symbol_name: b"bazz".to_vec(),
-                    file_offset: 100,
+                    entry_index: 0,
                 },
                 &SymbolTableEntry {
                     symbol_name: b"aaa".to_vec(),
-                    file_offset: 162,
+                    entry_index: 1,
                 },
             ]
         );
@@ -825,15 +840,15 @@ mod tests {
             vec![
                 &SymbolTableEntry {
                     symbol_name: b"bar".to_vec(),
-                    file_offset: 116,
+                    entry_index: 0,
                 },
                 &SymbolTableEntry {
                     symbol_name: b"bazz".to_vec(),
-                    file_offset: 116,
+                    entry_index: 0,
                 },
                 &SymbolTableEntry {
                     symbol_name: b"aaa".to_vec(),
-                    file_offset: 178,
+                    entry_index: 1,
                 },
             ]
         );
@@ -881,18 +896,173 @@ mod tests {
             vec![
                 &SymbolTableEntry {
                     symbol_name: b"bar".to_vec(),
-                    file_offset: 128,
+                    entry_index: 0,
                 },
                 &SymbolTableEntry {
                     symbol_name: b"bazz".to_vec(),
-                    file_offset: 128,
+                    entry_index: 0,
                 },
                 &SymbolTableEntry {
                     symbol_name: b"aaa".to_vec(),
-                    file_offset: 190,
+                    entry_index: 1,
                 },
             ]
         );
+    }
+
+    fn idents<'a>(entries: impl Iterator<Item=&'a HeaderAndData>) -> Vec<Vec<u8>> {
+        entries
+            .map(|HeaderAndData { header, .. }| header.identifier().to_vec())
+            .collect::<Vec<_>>()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        #[test]
+        fn test_any_gnu_general_archive(mut entries in any_vec(any::<HeaderAndData>(), 0..20)) {
+            let mut builder = GnuBuilder::new(
+                Cursor::new(Vec::new()),
+                false,
+                idents(entries.iter()),
+                GnuSymbolTableFormat::Size32,
+                BTreeMap::new(),
+            )?;
+
+            // shuffle to ensure writing entries out of order from idents is not broken
+            let mut rng = Pcg64Mcg::new(0xcafef00dd15ea5e5);
+            entries.shuffle(&mut rng);
+
+            for HeaderAndData { header, data } in &entries {
+                builder.append(&header, Cursor::new(data))?;
+            }
+
+            let mut raw_data = builder.into_inner()?;
+            raw_data.set_position(0);
+
+            let mut ar = Archive::new(raw_data);
+            assert_eq!(ar.count_entries()?, entries.len());
+
+            let mut actuals = entries.iter();
+            while let Some(entry) = ar.next_entry() {
+                let HeaderAndData { header, data } = actuals.next().unwrap();
+
+                let mut actual_entry = entry?;
+                let actual_header = actual_entry.header();
+                assert_eq!(actual_header.identifier(), header.identifier());
+                assert_eq!(actual_header.mtime(), header.mtime);
+                assert_eq!(actual_header.uid(), header.uid);
+                assert_eq!(actual_header.gid(), header.gid);
+                assert_eq!(actual_header.mode(), header.mode);
+                assert_eq!(actual_header.size(), header.size);
+                assert_eq!(actual_header.size() as usize, data.len());
+
+                let mut actual_data = Cursor::new(Vec::with_capacity(data.len()));
+                std::io::copy(&mut actual_entry, &mut actual_data)?;
+                let actual_data = actual_data.into_inner();
+                assert_eq!(&actual_data, data);
+            }
+        }
+
+        #[test]
+        fn test_any_gnu_deterministic_archive(mut entries in any_vec(any::<HeaderAndData>(), 0..20)) {
+            let mut builder = GnuBuilder::new(
+                Cursor::new(Vec::new()),
+                true,
+                idents(entries.iter()),
+                GnuSymbolTableFormat::Size32,
+                BTreeMap::new()
+            )?;
+
+            // shuffle to ensure writing entries out of order from idents is not broken
+            let mut rng = Pcg64Mcg::new(0xcafef00dd15ea5e5);
+            entries.shuffle(&mut rng);
+
+            for HeaderAndData { header, data } in &entries {
+                builder.append(&header, Cursor::new(data))?;
+            }
+
+            let mut raw_data = builder.into_inner()?;
+            raw_data.set_position(0);
+
+            let mut ar = Archive::new(raw_data);
+            assert_eq!(ar.count_entries()?, entries.len());
+
+            let mut actuals = entries.iter();
+            while let Some(entry) = ar.next_entry() {
+                let HeaderAndData { header, data } = actuals.next().unwrap();
+
+                let mut actual_entry = entry?;
+                let actual_header = actual_entry.header();
+                assert_eq!(actual_header.identifier(), header.identifier());
+                assert_eq!(actual_header.mtime(), 0);
+                assert_eq!(actual_header.uid(), 0);
+                assert_eq!(actual_header.gid(), 0);
+                assert_eq!(actual_header.mode(), 0o644);
+                assert_eq!(actual_header.size(), header.size);
+                assert_eq!(actual_header.size() as usize, data.len());
+
+                let mut actual_data = Cursor::new(Vec::with_capacity(data.len()));
+                std::io::copy(&mut actual_entry, &mut actual_data)?;
+                let actual_data = actual_data.into_inner();
+                assert_eq!(&actual_data, data);
+            }
+        }
+
+        #[test]
+        fn test_any_gnu_general_archive_with_syms(
+            test_data in any_vec((
+                any::<HeaderAndData>(),
+                any_vec(r#"\PC{1, 50}"#, 0..6)
+            ), 0..20)
+        ) {
+            let syms = test_data.iter()
+                .filter_map(|(hdr, syms)| if syms.is_empty() {
+                    None
+                } else {
+                    Some((hdr.header.identifier().to_vec(), syms.iter().map(|x| x.as_bytes().to_vec()).collect::<Vec<_>>()))
+                })
+                .collect::<BTreeMap<_, Vec<Vec<u8>>>>();
+
+            let mut builder = GnuBuilder::new(
+                Cursor::new(Vec::new()),
+                true,
+                idents(test_data.iter().map(|(hdr, _)| hdr)),
+                GnuSymbolTableFormat::Size32,
+                syms.clone()
+            )?;
+
+            let mut entries = test_data.iter().map(|(hdr, _)| hdr.clone()).collect::<Vec<_>>();
+
+            // shuffle to ensure writing entries out of order from idents is not broken
+            let mut rng = Pcg64Mcg::new(0xcafef00dd15ea5e5);
+            entries.shuffle(&mut rng);
+
+            for HeaderAndData { header, data } in entries {
+                builder.append(&header, Cursor::new(data))?;
+            }
+
+            let mut raw_data = builder.into_inner()?;
+            raw_data.set_position(0);
+
+            let mut ar = Archive::new(raw_data);
+            assert_eq!(ar.count_entries()?, test_data.len());
+
+            let expected_syms = test_data.iter()
+                .map(|(HeaderAndData { header, .. }, syms)| (header.identifier().clone(), syms))
+                .flat_map(|(id, syms)| syms.iter().map(move |sym| (sym.as_bytes().to_vec(), id.clone())))
+                .into_group_map();
+
+            let actual_syms = ar.symbols()?.cloned().collect::<Vec<_>>();
+            assert_eq!(actual_syms.len(), syms.iter().map(|(_, v)| v.len()).sum());
+
+            for SymbolTableEntry { symbol_name, entry_index } in actual_syms {
+                let entry_ids = expected_syms.get(&symbol_name).expect("Presented Symbol not in archive?");
+                let entry = ar.jump_to_entry(entry_index)?;
+
+                assert!(entry_ids.contains(&entry.header().identifier()));
+            }
+        }
     }
 }
 

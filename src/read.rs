@@ -535,6 +535,10 @@ impl<R: Read + Seek> Archive<R> {
                     }
                     let mut symbol_table = Vec::with_capacity(num_symbols);
                     for offset in symbol_offsets.into_iter() {
+                        let entry_index = lookup_entry_from_offset(
+                            &self.entry_headers,
+                            u64::from(offset),
+                        )?;
                         let mut symbol_name = Vec::<u8>::new();
                         reader.read_until(0, &mut symbol_name)?;
                         if symbol_name.last() == Some(&0) {
@@ -543,7 +547,7 @@ impl<R: Read + Seek> Archive<R> {
                         symbol_name.shrink_to_fit();
                         symbol_table.push(SymbolTableEntry {
                             symbol_name,
-                            file_offset: offset as u64,
+                            entry_index
                         });
                     }
                     self.symbol_table = Some(symbol_table);
@@ -558,6 +562,10 @@ impl<R: Read + Seek> Archive<R> {
                     }
                     let mut symbol_table = Vec::with_capacity(num_symbols);
                     for offset in symbol_offsets.into_iter() {
+                        let entry_index = lookup_entry_from_offset(
+                            &self.entry_headers,
+                            offset,
+                        )?;
                         let mut symbol_name = Vec::<u8>::new();
                         reader.read_until(0, &mut symbol_name)?;
                         if symbol_name.last() == Some(&0) {
@@ -566,7 +574,7 @@ impl<R: Read + Seek> Archive<R> {
                         symbol_name.shrink_to_fit();
                         symbol_table.push(SymbolTableEntry {
                             symbol_name,
-                            file_offset: offset,
+                            entry_index
                         });
                     }
                     self.symbol_table = Some(symbol_table);
@@ -595,10 +603,14 @@ impl<R: Read + Seek> Archive<R> {
                         {
                             str_end += 1;
                         }
+                        let entry_index = lookup_entry_from_offset(
+                            &self.entry_headers,
+                            u64::from(file_offset),
+                        )?;
                         let string = &str_table_data[str_start..str_end];
                         symbol_table.push(SymbolTableEntry {
                             symbol_name: string.to_vec(),
-                            file_offset: file_offset as u64,
+                            entry_index,
                         });
                     }
                     self.symbol_table = Some(symbol_table);
@@ -700,8 +712,8 @@ pub struct SymbolTableEntry {
     /// The name of the symbol.
     pub symbol_name: Vec<u8>,
 
-    /// The file offset of the object file containing the symbol.
-    pub file_offset: u64,
+    /// The entry this symbol points to
+    pub entry_index: usize,
 }
 
 /// An iterator over the symbols in the symbol table of an archive.
@@ -746,6 +758,14 @@ fn annotate(error: io::Error, msg: &str) -> io::Error {
         io::Error::new(kind, msg)
     }
 }
+
+#[inline]
+fn lookup_entry_from_offset(entry_headers: &Vec<HeaderAndLocation>, offset: u64) -> io::Result<usize> {
+    entry_headers
+        .binary_search_by_key(&offset, |x| x.header_start)
+        .map_err(|_| err!("Offset `{}` does not point to an entity header", offset))
+}
+
 
 // ========================================================================= //
 
@@ -1455,9 +1475,9 @@ mod tests {
         !<arch>\n\
         #1/16           0           0     0     0       64        `\n\
         __.SYMDEF SORTED\x18\x00\x00\x00\
-        \x00\x00\x00\x00\x80\x00\x00\x00\
-        \x04\x00\x00\x00\x80\x00\x00\x00\
-        \x0b\x00\x00\x00\x80\x00\x00\x00\
+        \x00\x00\x00\x00\x84\x00\x00\x00\
+        \x04\x00\x00\x00\x84\x00\x00\x00\
+        \x0b\x00\x00\x00\x84\x00\x00\x00\
         \x10\x00\x00\x00baz\x00foobar\x00quux\x00\
         foo.o/          1487552916  501   20    100644  16        `\n\
         foobar,baz,quux\n";
@@ -1478,7 +1498,10 @@ mod tests {
         let input = b"\
         !<arch>\n\
         /               0           0     0     0       32        `\n\
-        \x00\x00\x00\x03\x00\x00\x00\x5c\x00\x00\x00\x5c\x00\x00\x00\x5c\
+        \x00\x00\x00\x03\
+        \x00\x00\x00\x64\
+        \x00\x00\x00\x64\
+        \x00\x00\x00\x64\
         foobar\x00baz\x00quux\x00\
         foo.o/          1487552916  501   20    100644  16        `\n\
         foobar,baz,quux\n";
