@@ -32,7 +32,7 @@ impl Arbitrary for HeaderAndData {
             0..999999999999u64, // Mtime
             0..999999u32, // Uid
             0..999999u32, // Gid
-            0..342391u32, // Mode
+            0..0o7777_7777u32, // Mode
         )
             .prop_map(|(data, ident, mtime, uid, gid, mode)| {
                 let size = data.len() as u64;
