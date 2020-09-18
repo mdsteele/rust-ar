@@ -35,17 +35,14 @@ fn main() {
 
     while let Some(entry) = archive.next_entry() {
         let mut entry = entry.expect("failed to parse archive entry");
-        let output_path =
-            Path::new(str::from_utf8(entry.header().identifier()).expect(
-                "Non UTF-8 filename",
-            )).to_path_buf();
-        let mut output_file = File::create(&output_path).expect(&format!(
-            "unable to create file {:?}",
-            output_path
-        ));
-        io::copy(&mut entry, &mut output_file).expect(&format!(
-            "failed to extract file {:?}",
-            output_path
-        ));
+        let output_path = Path::new(
+            str::from_utf8(entry.header().identifier())
+                .expect("Non UTF-8 filename"),
+        )
+        .to_path_buf();
+        let mut output_file = File::create(&output_path)
+            .expect(&format!("unable to create file {:?}", output_path));
+        io::copy(&mut entry, &mut output_file)
+            .expect(&format!("failed to extract file {:?}", output_path));
     }
 }
