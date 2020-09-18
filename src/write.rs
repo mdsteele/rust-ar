@@ -104,7 +104,8 @@ impl<W: Write + Seek> Builder<W> {
     /// destination of all data written.
     ///
     /// The second argument is a map from file identifier to the name of all symbols in the file.
-    pub fn new_with_symbol_table(
+    // FIXME the symbol table writing is incorrect. Make this public once it is fixed.
+    fn new_with_symbol_table(
         mut writer: W,
         symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     ) -> Result<Builder<W>> {
