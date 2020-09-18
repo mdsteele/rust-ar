@@ -96,7 +96,15 @@ pub struct Builder<W: Write + Seek> {
 impl<W: Write + Seek> Builder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
-    pub fn new(
+    pub fn new(writer: W) -> Result<Builder<W>> {
+        Self::new_with_symbol_table(writer, BTreeMap::new())
+    }
+
+    /// Create a new archive builder with the underlying writer object as the
+    /// destination of all data written.
+    ///
+    /// The second argument is a map from file identifier to the name of all symbols in the file.
+    pub fn new_with_symbol_table(
         mut writer: W,
         symbol_table: BTreeMap<Vec<u8>, Vec<Vec<u8>>>,
     ) -> Result<Builder<W>> {
@@ -371,6 +379,21 @@ impl<W: Write + Seek> GnuBuilder<W> {
     /// the complete list of entry identifiers that will be included in this
     /// archive.
     pub fn new(
+        writer: W,
+        deterministic: bool,
+        identifiers: Vec<Vec<u8>>,
+        symtab_format: GnuSymbolTableFormat,
+    ) -> Result<GnuBuilder<W>> {
+        Self::new_with_symbol_table(writer, deterministic, identifiers, symtab_format, BTreeMap::new())
+    }
+
+    /// The third argument is a map from file identifier to the name of all symbols in the file.
+    /// Create a new archive builder with the underlying writer object as the
+    /// destination of all data written.  The `identifiers` parameter must give
+    /// the complete list of entry identifiers that will be included in this
+    /// archive. The last argument is a map from file identifier to the name of
+    /// all symbols in the file.
+    pub fn new_with_symbol_table(
         mut writer: W,
         deterministic: bool,
         identifiers: Vec<Vec<u8>>,
@@ -624,7 +647,7 @@ mod tests {
     #[test]
     fn build_common_archive() {
         let mut builder =
-            Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
+            Builder::new(Cursor::new(Vec::new())).unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
         header1.set_mtime(1487552916);
         header1.set_uid(501);
@@ -646,7 +669,7 @@ mod tests {
     #[test]
     fn build_bsd_archive_with_long_filenames() {
         let mut builder =
-            Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
+            Builder::new(Cursor::new(Vec::new())).unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
         header1.set_identifier(b"this_is_a_very_long_filename.txt".to_vec());
         header1.set_mtime(1487552916);
@@ -673,7 +696,7 @@ mod tests {
     #[test]
     fn build_bsd_archive_with_space_in_filename() {
         let mut builder =
-            Builder::new(Cursor::new(Vec::new()), BTreeMap::new()).unwrap();
+            Builder::new(Cursor::new(Vec::new())).unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
         builder.append(&header, "baz\n".as_bytes()).unwrap();
         let actual = builder.into_inner().unwrap().into_inner();
@@ -692,7 +715,6 @@ mod tests {
             false,
             names,
             GnuSymbolTableFormat::Size32,
-            BTreeMap::new(),
         )
         .unwrap();
         let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
@@ -724,7 +746,6 @@ mod tests {
             false,
             names,
             GnuSymbolTableFormat::Size32,
-            BTreeMap::new(),
         )
         .unwrap();
         let mut header1 = Header::new(b"short".to_vec(), 1);
@@ -761,7 +782,6 @@ mod tests {
             false,
             names,
             GnuSymbolTableFormat::Size32,
-            BTreeMap::new(),
         )
         .unwrap();
         let header = Header::new(b"foo bar".to_vec(), 4);
@@ -785,7 +805,6 @@ mod tests {
             false,
             names,
             GnuSymbolTableFormat::Size32,
-            BTreeMap::new(),
         )
         .unwrap();
         let header = Header::new(b"bar".to_vec(), 4);
@@ -807,7 +826,6 @@ mod tests {
                 false,
                 filenames.clone(),
                 GnuSymbolTableFormat::Size32,
-                BTreeMap::new(),
             )
             .unwrap();
 
@@ -832,7 +850,7 @@ mod tests {
         symbol_table
             .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
         symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
-        let mut builder = GnuBuilder::new(
+        let mut builder = GnuBuilder::new_with_symbol_table(
             Cursor::new(Vec::new()),
             false,
             vec![b"foo".to_vec(), b"foobar".to_vec()],
@@ -892,7 +910,7 @@ mod tests {
         symbol_table
             .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
         symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
-        let mut builder = GnuBuilder::new(
+        let mut builder = GnuBuilder::new_with_symbol_table(
             Cursor::new(Vec::new()),
             false,
             vec![b"foo".to_vec(), b"foobar".to_vec()],
@@ -952,8 +970,10 @@ mod tests {
         symbol_table
             .insert(b"foo".to_vec(), vec![b"bar".to_vec(), b"bazz".to_vec()]);
         symbol_table.insert(b"foobar".to_vec(), vec![b"aaa".to_vec()]);
-        let mut builder =
-            Builder::new(Cursor::new(Vec::new()), symbol_table).unwrap();
+        let mut builder = Builder::new_with_symbol_table(
+            Cursor::new(Vec::new()),
+            symbol_table,
+        ).unwrap();
         builder
             .append(&Header::new(b"foo".to_vec(), 1), &mut (&[b'?'] as &[u8]))
             .expect("add file");
@@ -1005,7 +1025,7 @@ mod tests {
     #[test]
     fn build_gnu_archive_with_bad_headers() {
         let assert_err = |mutator: fn(&mut Header) -> (), msg: &str| {
-            let mut builder = GnuBuilder::new(Cursor::new(vec![]), false, vec![b"ident".to_vec()], GnuSymbolTableFormat::Size32, BTreeMap::new()).unwrap();
+            let mut builder = GnuBuilder::new(Cursor::new(vec![]), false, vec![b"ident".to_vec()], GnuSymbolTableFormat::Size32).unwrap();
             let mut header = Header::new(b"ident".to_vec(), 12345);
             mutator(&mut header);
             let err = builder.append(&header, Cursor::new(vec![])).expect_err("No error produced!");
@@ -1022,7 +1042,7 @@ mod tests {
     #[test]
     fn build_bsd_archive_with_bad_headers() {
         let assert_err = |mutator: fn(&mut Header) -> (), msg: &str| {
-            let mut builder = Builder::new(Cursor::new(vec![]), BTreeMap::new()).unwrap();
+            let mut builder = Builder::new(Cursor::new(vec![])).unwrap();
             let mut header = Header::new(b"ident".to_vec(), 12345);
             mutator(&mut header);
             let err = builder.append(&header, Cursor::new(vec![])).expect_err("No error produced!");
@@ -1052,7 +1072,6 @@ mod tests {
                 false,
                 idents(entries.iter()),
                 GnuSymbolTableFormat::Size32,
-                BTreeMap::new(),
             )?;
 
             // shuffle to ensure writing entries out of order from idents is not broken
@@ -1097,7 +1116,6 @@ mod tests {
                 true,
                 idents(entries.iter()),
                 GnuSymbolTableFormat::Size32,
-                BTreeMap::new()
             )?;
 
             // shuffle to ensure writing entries out of order from idents is not broken
@@ -1150,7 +1168,7 @@ mod tests {
                 })
                 .collect::<BTreeMap<_, Vec<Vec<u8>>>>();
 
-            let mut builder = GnuBuilder::new(
+            let mut builder = GnuBuilder::new_with_symbol_table(
                 Cursor::new(Vec::new()),
                 true,
                 idents(test_data.iter().map(|(hdr, _)| hdr)),

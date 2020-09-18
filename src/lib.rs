@@ -35,7 +35,7 @@
 //! use std::collections::BTreeMap;
 //! use std::fs::File;
 //! // Create a new archive that will be written to foo.a:
-//! let mut builder = Builder::new(File::create("foo.a").unwrap(), BTreeMap::new()).unwrap();
+//! let mut builder = Builder::new(File::create("foo.a").unwrap()).unwrap();
 //! // Add foo/bar.txt to the archive, under the name "bar.txt":
 //! builder.append_path("foo/bar.txt").unwrap();
 //! // Add foo/baz.txt to the archive, under the name "hello.txt":
@@ -103,20 +103,20 @@ pub enum Variant {
     /// Used by Debian package files; allows only short filenames.
     Common,
     /// Used by BSD `ar` (and OS X); backwards-compatible with common variant.
-    BSD,
+    Bsd,
     /// Used by GNU `ar` (and Windows); incompatible with common variant.
-    GNU,
+    Gnu,
 }
 
 /// Variants of the symbol table if present
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SymbolTableVariant {
     /// Used by BSD Archives the more "classical" unix symbol table
-    BSD,
+    Bsd,
     /// Used in GNU, SVR4 and others
-    GNU,
+    Gnu,
     /// The extended format used when an archive becomes larger than 4gb
-    GNU64BIT,
+    Gnu64Bit,
 }
 
 // ========================================================================= //

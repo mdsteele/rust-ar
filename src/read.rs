@@ -63,8 +63,8 @@ impl Header {
         let mut header_len = ENTRY_HEADER_LEN as u64;
 
         // Parse GNU style special identifiers
-        if *variant != Variant::BSD && identifier.starts_with(b"/") {
-            *variant = Variant::GNU;
+        if *variant != Variant::Bsd && identifier.starts_with(b"/") {
+            *variant = Variant::Gnu;
             if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
                 || identifier == GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID.as_bytes()
             {
@@ -93,19 +93,19 @@ impl Header {
                 None => name_table.len(),
             };
             identifier = name_table[start..end].to_vec();
-        } else if *variant != Variant::BSD && identifier.ends_with(b"/") {
-            *variant = Variant::GNU;
+        } else if *variant != Variant::Bsd && identifier.ends_with(b"/") {
+            *variant = Variant::Gnu;
             identifier.pop();
         }
 
         // Parse misc fields
         let mtime = parse_number("timestamp", &buffer[16..28], 10)?;
-        let uid = if *variant == Variant::GNU {
+        let uid = if *variant == Variant::Gnu {
             parse_number_permitting_empty("owner ID", &buffer[28..34], 10)?
         } else {
             parse_number("owner ID", &buffer[28..34], 10)?
         } as u32;
-        let gid = if *variant == Variant::GNU {
+        let gid = if *variant == Variant::Gnu {
             parse_number_permitting_empty("group ID", &buffer[34..40], 10)?
         } else {
             parse_number("group ID", &buffer[34..40], 10)?
@@ -113,8 +113,8 @@ impl Header {
         let mode = parse_number("file mode", &buffer[40..48], 8)? as u32;
 
         // Parse BSD style special identifiers
-        if *variant != Variant::GNU && identifier.starts_with(b"#1/") {
-            *variant = Variant::BSD;
+        if *variant != Variant::Gnu && identifier.starts_with(b"#1/") {
+            *variant = Variant::Bsd;
             let padded_length =
                 parse_number("BSD filename length", &buffer[3..16], 10)?;
             if size < padded_length {
@@ -268,7 +268,7 @@ impl<R: Read> Archive<R> {
     pub fn into_inner(self) -> Result<R> { Ok(self.reader) }
 
     fn is_name_table_id(&self, identifier: &[u8]) -> bool {
-        self.variant == Variant::GNU
+        self.variant == Variant::Gnu
             && identifier == GNU_NAME_TABLE_ID.as_bytes()
     }
 
@@ -277,23 +277,23 @@ impl<R: Read> Archive<R> {
         identifier: &[u8],
     ) -> Option<SymbolTableVariant> {
         match self.variant {
-            Variant::BSD
+            Variant::Bsd
                 if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID.as_bytes()
                     || identifier
                         == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID.as_bytes() =>
             {
-                Some(SymbolTableVariant::BSD)
+                Some(SymbolTableVariant::Bsd)
             }
-            Variant::GNU
+            Variant::Gnu
                 if identifier == GNU_SYMBOL_LOOKUP_TABLE_ID.as_bytes() =>
             {
-                Some(SymbolTableVariant::GNU)
+                Some(SymbolTableVariant::Gnu)
             }
-            Variant::GNU
+            Variant::Gnu
                 if identifier
                     == GNU_SYMBOL_LOOKUP_TABLE_64BIT_ID.as_bytes() =>
             {
-                Some(SymbolTableVariant::GNU64BIT)
+                Some(SymbolTableVariant::Gnu64Bit)
             }
             _ => None,
         }
@@ -525,7 +525,7 @@ impl<R: Read + Seek> Archive<R> {
             );
             match self.symbol_table_variant {
                 None => unreachable!(),
-                Some(SymbolTableVariant::GNU) => {
+                Some(SymbolTableVariant::Gnu) => {
                     let num_symbols = read_be_u32(&mut reader)? as usize;
                     let mut symbol_offsets =
                         Vec::<u32>::with_capacity(num_symbols);
@@ -552,7 +552,7 @@ impl<R: Read + Seek> Archive<R> {
                     }
                     self.symbol_table = Some(symbol_table);
                 }
-                Some(SymbolTableVariant::GNU64BIT) => {
+                Some(SymbolTableVariant::Gnu64Bit) => {
                     let num_symbols = read_be_u64(&mut reader)? as usize;
                     let mut symbol_offsets =
                         Vec::<u64>::with_capacity(num_symbols);
@@ -579,7 +579,7 @@ impl<R: Read + Seek> Archive<R> {
                     }
                     self.symbol_table = Some(symbol_table);
                 }
-                Some(SymbolTableVariant::BSD) => {
+                Some(SymbolTableVariant::Bsd) => {
                     let num_symbols = (read_le_u32(&mut reader)? / 8) as usize;
                     let mut symbol_offsets =
                         Vec::<(u32, u32)>::with_capacity(num_symbols);
@@ -888,7 +888,7 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert!(archive.next_entry().is_none());
-        assert_eq!(archive.variant(), Variant::BSD);
+        assert_eq!(archive.variant(), Variant::Bsd);
     }
 
     #[test]
@@ -907,7 +907,7 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert!(archive.next_entry().is_none());
-        assert_eq!(archive.variant(), Variant::BSD);
+        assert_eq!(archive.variant(), Variant::Bsd);
     }
 
     #[test]
@@ -940,7 +940,7 @@ mod tests {
             assert_eq!(entry.header().size(), 4);
         }
         assert!(archive.next_entry().is_none());
-        assert_eq!(archive.variant(), Variant::GNU);
+        assert_eq!(archive.variant(), Variant::Gnu);
     }
 
     #[test]
@@ -982,10 +982,10 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert!(archive.next_entry().is_none());
-        assert_eq!(archive.variant(), Variant::GNU);
+        assert_eq!(archive.variant(), Variant::Gnu);
     }
 
-    // MS `.lib` files are very similar to GNU `ar` archives, but with a few
+    // MS `.lib` files are very similar to Gnu `ar` archives, but with a few
     // tweaks:
     // * File names in the name table are terminated by null, rather than /\n
     // * Numeric entries may be all empty string, interpreted as 0, possibly?
@@ -1028,7 +1028,7 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert!(archive.next_entry().is_none());
-        assert_eq!(archive.variant(), Variant::GNU);
+        assert_eq!(archive.variant(), Variant::Gnu);
     }
 
     #[test]
@@ -1047,7 +1047,7 @@ mod tests {
             assert_eq!(&buffer as &[u8], "baz\n".as_bytes());
         }
         assert!(archive.next_entry().is_none());
-        assert_eq!(archive.variant(), Variant::GNU);
+        assert_eq!(archive.variant(), Variant::Gnu);
     }
 
     #[test]
@@ -1459,7 +1459,7 @@ mod tests {
         foobar,baz,quux\n";
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
-        assert_eq!(archive.variant(), Variant::BSD);
+        assert_eq!(archive.variant(), Variant::Bsd);
         let symbols = archive
             .symbols()
             .unwrap()
@@ -1483,7 +1483,7 @@ mod tests {
         foobar,baz,quux\n";
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
-        assert_eq!(archive.variant(), Variant::BSD);
+        assert_eq!(archive.variant(), Variant::Bsd);
         let symbols = archive
             .symbols()
             .unwrap()
@@ -1507,7 +1507,7 @@ mod tests {
         foobar,baz,quux\n";
         let mut archive = Archive::new(Cursor::new(input as &[u8]));
         assert_eq!(archive.symbols().unwrap().len(), 3);
-        assert_eq!(archive.variant(), Variant::GNU);
+        assert_eq!(archive.variant(), Variant::Gnu);
         let symbols = archive
             .symbols()
             .unwrap()

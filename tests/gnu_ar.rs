@@ -112,7 +112,7 @@ fn gnu_tools_understand_archive() -> Result<(), Box<dyn Error>> {
         bin_vec!["some_function_01", "some_function_02"],
     );
 
-    let mut builder = GnuBuilder::new(
+    let mut builder = GnuBuilder::new_with_symbol_table(
         tempfile::NamedTempFile::new()?,
         true,
         idents,
