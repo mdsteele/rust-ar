@@ -81,9 +81,6 @@ use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 
-#[cfg(windows)]
-use std::os::windows::ffi::OsStrExt;
-
 // ========================================================================= //
 
 fn read_le_u32(r: &mut impl io::Read) -> io::Result<u32> {
@@ -1102,18 +1099,7 @@ fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
     Ok(string.as_bytes().to_vec())
 }
 
-#[cfg(windows)]
-fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
-    let mut bytes = Vec::<u8>::new();
-    for wide in string.encode_wide() {
-        // Little-endian:
-        bytes.push((wide & 0xff) as u8);
-        bytes.push((wide >> 8) as u8);
-    }
-    Ok(bytes)
-}
-
-#[cfg(not(any(unix, windows)))]
+#[cfg(not(unix))]
 fn osstr_to_bytes(string: &OsStr) -> Result<Vec<u8>> {
     let utf8: &str = string.to_str().ok_or_else(|| {
         Error::new(ErrorKind::InvalidData, "Non-UTF8 file name")
