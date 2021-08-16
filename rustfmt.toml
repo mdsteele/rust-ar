@@ -1,7 +1,4 @@
-fn_args_density = "Compressed"
-fn_single_line = true
-format_strings = false
 max_width = 79
-reorder_imported_names = true
-report_fixme = "Always"
-use_try_shorthand = true
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_small_heuristics = "Max"

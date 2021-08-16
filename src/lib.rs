@@ -70,8 +70,10 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{File, Metadata};
-use std::io::{self, BufRead, BufReader, Error, ErrorKind, Read, Result, Seek,
-              SeekFrom, Write};
+use std::io::{
+    self, BufRead, BufReader, Error, ErrorKind, Read, Result, Seek, SeekFrom,
+    Write,
+};
 use std::path::Path;
 use std::str;
 
@@ -136,14 +138,7 @@ impl Header {
     /// Creates a header with the given file identifier and size, and all
     /// other fields set to zero.
     pub fn new(identifier: Vec<u8>, size: u64) -> Header {
-        Header {
-            identifier,
-            mtime: 0,
-            uid: 0,
-            gid: 0,
-            mode: 0,
-            size,
-        }
+        Header { identifier, mtime: 0, uid: 0, gid: 0, mode: 0, size }
     }
 
     /// Creates a header with the given file identifier and all other fields
@@ -166,7 +161,9 @@ impl Header {
     }
 
     /// Returns the file identifier.
-    pub fn identifier(&self) -> &[u8] { &self.identifier }
+    pub fn identifier(&self) -> &[u8] {
+        &self.identifier
+    }
 
     /// Sets the file identifier.
     pub fn set_identifier(&mut self, identifier: Vec<u8>) {
@@ -174,39 +171,62 @@ impl Header {
     }
 
     /// Returns the last modification time in Unix time format.
-    pub fn mtime(&self) -> u64 { self.mtime }
+    pub fn mtime(&self) -> u64 {
+        self.mtime
+    }
 
     /// Sets the last modification time in Unix time format.
-    pub fn set_mtime(&mut self, mtime: u64) { self.mtime = mtime; }
+    pub fn set_mtime(&mut self, mtime: u64) {
+        self.mtime = mtime;
+    }
 
     /// Returns the value of the owner's user ID field.
-    pub fn uid(&self) -> u32 { self.uid }
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
 
     /// Sets the value of the owner's user ID field.
-    pub fn set_uid(&mut self, uid: u32) { self.uid = uid; }
+    pub fn set_uid(&mut self, uid: u32) {
+        self.uid = uid;
+    }
 
     /// Returns the value of the group's user ID field.
-    pub fn gid(&self) -> u32 { self.gid }
+    pub fn gid(&self) -> u32 {
+        self.gid
+    }
 
     /// Returns the value of the group's user ID field.
-    pub fn set_gid(&mut self, gid: u32) { self.gid = gid; }
+    pub fn set_gid(&mut self, gid: u32) {
+        self.gid = gid;
+    }
 
     /// Returns the mode bits for this file.
-    pub fn mode(&self) -> u32 { self.mode }
+    pub fn mode(&self) -> u32 {
+        self.mode
+    }
 
     /// Sets the mode bits for this file.
-    pub fn set_mode(&mut self, mode: u32) { self.mode = mode; }
+    pub fn set_mode(&mut self, mode: u32) {
+        self.mode = mode;
+    }
 
     /// Returns the length of the file, in bytes.
-    pub fn size(&self) -> u64 { self.size }
+    pub fn size(&self) -> u64 {
+        self.size
+    }
 
     /// Sets the length of the file, in bytes.
-    pub fn set_size(&mut self, size: u64) { self.size = size; }
+    pub fn set_size(&mut self, size: u64) {
+        self.size = size;
+    }
 
     /// Parses and returns the next header and its length.  Returns `Ok(None)`
     /// if we are at EOF.
-    fn read<R>(reader: &mut R, variant: &mut Variant, name_table: &mut Vec<u8>)
-        -> Result<Option<(Header, u64)>>
+    fn read<R>(
+        reader: &mut R,
+        variant: &mut Variant,
+        name_table: &mut Vec<u8>,
+    ) -> Result<Option<(Header, u64)>>
     where
         R: Read,
     {
@@ -244,12 +264,12 @@ impl Header {
                 })?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             }
-            let start =
-                parse_number("GNU filename index", &buffer[1..16], 10)? as
-                    usize;
-            let end = match name_table[start..].iter().position(|&ch| {
-                ch == b'/' || ch == b'\x00'
-            }) {
+            let start = parse_number("GNU filename index", &buffer[1..16], 10)?
+                as usize;
+            let end = match name_table[start..]
+                .iter()
+                .position(|&ch| ch == b'/' || ch == b'\x00')
+            {
                 Some(len) => start + len,
                 None => name_table.len(),
             };
@@ -278,8 +298,7 @@ impl Header {
                 let msg = format!(
                     "Entry size ({}) smaller than extended \
                                    entry identifier length ({})",
-                    size,
-                    padded_length
+                    size, padded_length
                 );
                 return Err(Error::new(ErrorKind::InvalidData, msg));
             }
@@ -288,9 +307,8 @@ impl Header {
             let mut id_buffer = vec![0; padded_length as usize];
             let bytes_read = reader.read(&mut id_buffer)?;
             if bytes_read < id_buffer.len() {
-                if let Err(error) = reader.read_exact(
-                    &mut id_buffer[bytes_read..],
-                )
+                if let Err(error) =
+                    reader.read_exact(&mut id_buffer[bytes_read..])
                 {
                     if error.kind() == ErrorKind::UnexpectedEof {
                         let msg = "unexpected EOF in the middle of extended \
@@ -306,22 +324,15 @@ impl Header {
                 id_buffer.pop();
             }
             identifier = id_buffer;
-            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
-                identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+            if identifier == BSD_SYMBOL_LOOKUP_TABLE_ID
+                || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
             {
                 io::copy(&mut reader.by_ref().take(size), &mut io::sink())?;
                 return Ok(Some((Header::new(identifier, size), header_len)));
             }
         }
         Ok(Some((
-            Header {
-                identifier,
-                mtime,
-                uid,
-                gid,
-                mode,
-                size,
-            },
+            Header { identifier, mtime, uid, gid, mode, size },
             header_len,
         )))
     }
@@ -348,18 +359,17 @@ impl Header {
             write!(
                 writer,
                 "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-                self.mtime,
-                self.uid,
-                self.gid,
-                self.mode,
-                self.size
+                self.mtime, self.uid, self.gid, self.mode, self.size
             )?;
         }
         Ok(())
     }
 
-    fn write_gnu<W>(&self, writer: &mut W, names: &HashMap<Vec<u8>, usize>)
-        -> Result<()>
+    fn write_gnu<W>(
+        &self,
+        writer: &mut W,
+        names: &HashMap<Vec<u8>, usize>,
+    ) -> Result<()>
     where
         W: Write,
     {
@@ -374,11 +384,7 @@ impl Header {
         write!(
             writer,
             "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
-            self.mtime,
-            self.uid,
-            self.gid,
-            self.mode,
-            self.size
+            self.mtime, self.uid, self.gid, self.mode, self.size
         )?;
         Ok(())
     }
@@ -402,8 +408,11 @@ fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
  * Equivalent to parse_number() except for the case of bytes being
  * all spaces (eg all 0x20) as MS tools emit for UID/GID
  */
-fn parse_number_permitting_empty(field_name: &str, bytes: &[u8], radix: u32)
-    -> Result<u64> {
+fn parse_number_permitting_empty(
+    field_name: &str,
+    bytes: &[u8],
+    radix: u32,
+) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         let trimmed = string.trim_end();
         if trimmed.len() == 0 {
@@ -443,7 +452,7 @@ pub struct Archive<R: Read> {
     started: bool, // True if we've read past the global header.
     padding: bool, // True if there's a padding byte before the next entry.
     scanned: bool, // True if entry_headers is complete.
-    error: bool, // True if we have encountered an error.
+    error: bool,   // True if we have encountered an error.
 }
 
 impl<R: Read> Archive<R> {
@@ -472,22 +481,26 @@ impl<R: Read> Archive<R> {
     /// read (i.e. before the `next_entry()` method returns `None`).  In
     /// particular, a new `Archive` object that hasn't yet read any data at all
     /// will always return `Variant::Common`.
-    pub fn variant(&self) -> Variant { self.variant }
+    pub fn variant(&self) -> Variant {
+        self.variant
+    }
 
     /// Unwrap this archive reader, returning the underlying reader object.
-    pub fn into_inner(self) -> Result<R> { Ok(self.reader) }
+    pub fn into_inner(self) -> Result<R> {
+        Ok(self.reader)
+    }
 
     fn is_name_table_id(&self, identifier: &[u8]) -> bool {
-        self.variant == Variant::GNU &&
-            identifier == GNU_NAME_TABLE_ID.as_bytes()
+        self.variant == Variant::GNU
+            && identifier == GNU_NAME_TABLE_ID.as_bytes()
     }
 
     fn is_symbol_lookup_table_id(&self, identifier: &[u8]) -> bool {
         match self.variant {
             Variant::Common => false,
             Variant::BSD => {
-                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID ||
-                    identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
+                identifier == BSD_SYMBOL_LOOKUP_TABLE_ID
+                    || identifier == BSD_SORTED_SYMBOL_LOOKUP_TABLE_ID
             }
             Variant::GNU => identifier == GNU_SYMBOL_LOOKUP_TABLE_ID,
         }
@@ -521,8 +534,8 @@ impl<R: Read> Archive<R> {
             if self.error {
                 return None;
             }
-            if self.scanned &&
-                self.next_entry_index == self.entry_headers.len()
+            if self.scanned
+                && self.next_entry_index == self.entry_headers.len()
             {
                 return None;
             }
@@ -536,8 +549,10 @@ impl<R: Read> Archive<R> {
                     Ok(()) => {
                         if buffer[0] != b'\n' {
                             self.error = true;
-                            let msg = format!("invalid padding byte ({})",
-                                              buffer[0]);
+                            let msg = format!(
+                                "invalid padding byte ({})",
+                                buffer[0]
+                            );
                             let error =
                                 Error::new(ErrorKind::InvalidData, msg);
                             return Some(Err(error));
@@ -572,24 +587,24 @@ impl<R: Read> Archive<R> {
                     }
                     if self.is_symbol_lookup_table_id(header.identifier()) {
                         self.symbol_table_header = Some(HeaderAndLocation {
-                            header: header,
-                            header_start: header_start,
+                            header,
+                            header_start,
                             data_start: header_start + header_len,
                         });
                         continue;
                     }
                     if self.next_entry_index == self.entry_headers.len() {
                         self.entry_headers.push(HeaderAndLocation {
-                            header: header,
-                            header_start: header_start,
+                            header,
+                            header_start,
                             data_start: header_start + header_len,
                         });
                     }
-                    let header = &self.entry_headers[self.next_entry_index]
-                        .header;
+                    let header =
+                        &self.entry_headers[self.next_entry_index].header;
                     self.next_entry_index += 1;
                     return Some(Ok(Entry {
-                        header: header,
+                        header,
                         reader: self.reader.by_ref(),
                         length: size,
                         position: 0,
@@ -617,13 +632,11 @@ impl<R: Read + Seek> Archive<R> {
         loop {
             let header_start = self.new_entry_start;
             self.reader.seek(SeekFrom::Start(header_start))?;
-            if let Some((header, header_len)) =
-                Header::read(
-                    &mut self.reader,
-                    &mut self.variant,
-                    &mut self.name_table,
-                )?
-            {
+            if let Some((header, header_len)) = Header::read(
+                &mut self.reader,
+                &mut self.variant,
+                &mut self.name_table,
+            )? {
                 let size = header.size();
                 self.new_entry_start += header_len + size + (size % 2);
                 if self.is_name_table_id(header.identifier()) {
@@ -631,15 +644,15 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 if self.is_symbol_lookup_table_id(header.identifier()) {
                     self.symbol_table_header = Some(HeaderAndLocation {
-                        header: header,
-                        header_start: header_start,
+                        header,
+                        header_start,
                         data_start: header_start + header_len,
                     });
                     continue;
                 }
                 self.entry_headers.push(HeaderAndLocation {
-                    header: header,
-                    header_start: header_start,
+                    header,
+                    header_start,
                     data_start: header_start + header_len,
                 });
             } else {
@@ -648,8 +661,8 @@ impl<R: Read + Seek> Archive<R> {
         }
         // Resume our previous position in the file.
         if self.next_entry_index < self.entry_headers.len() {
-            let offset = self.entry_headers[self.next_entry_index]
-                .header_start;
+            let offset =
+                self.entry_headers[self.next_entry_index].header_start;
             self.reader.seek(SeekFrom::Start(offset))?;
         }
         self.scanned = true;
@@ -698,9 +711,9 @@ impl<R: Read + Seek> Archive<R> {
         if let Some(ref header_and_loc) = self.symbol_table_header {
             let offset = header_and_loc.data_start;
             self.reader.seek(SeekFrom::Start(offset))?;
-            let mut reader = BufReader::new(self.reader.by_ref().take(
-                header_and_loc.header.size(),
-            ));
+            let mut reader = BufReader::new(
+                self.reader.by_ref().take(header_and_loc.header.size()),
+            );
             if self.variant == Variant::GNU {
                 let num_symbols = read_be_u32(&mut reader)? as usize;
                 let mut symbol_offsets =
@@ -721,8 +734,7 @@ impl<R: Read + Seek> Archive<R> {
                 }
                 self.symbol_table = Some(symbol_table);
             } else {
-                let num_symbols = (read_le_u32(&mut reader)? / 8) as
-                    usize;
+                let num_symbols = (read_le_u32(&mut reader)? / 8) as usize;
                 let mut symbol_offsets =
                     Vec::<(u32, u32)>::with_capacity(num_symbols);
                 for _ in 0..num_symbols {
@@ -739,8 +751,8 @@ impl<R: Read + Seek> Archive<R> {
                 for (str_start, file_offset) in symbol_offsets.into_iter() {
                     let str_start = str_start as usize;
                     let mut str_end = str_start;
-                    while str_end < str_table_data.len() &&
-                        str_table_data[str_end] != 0u8
+                    while str_end < str_table_data.len()
+                        && str_table_data[str_end] != 0u8
                     {
                         str_end += 1;
                     }
@@ -752,8 +764,8 @@ impl<R: Read + Seek> Archive<R> {
         }
         // Resume our previous position in the file.
         if self.entry_headers.len() > 0 {
-            let offset = self.entry_headers[self.next_entry_index]
-                .header_start;
+            let offset =
+                self.entry_headers[self.next_entry_index].header_start;
             self.reader.seek(SeekFrom::Start(offset))?;
         }
         Ok(())
@@ -765,10 +777,7 @@ impl<R: Read + Seek> Archive<R> {
     /// values.
     pub fn symbols(&mut self) -> io::Result<Symbols<R>> {
         self.parse_symbol_table_if_necessary()?;
-        Ok(Symbols {
-            archive: self,
-            index: 0,
-        })
+        Ok(Symbols { archive: self, index: 0 })
     }
 }
 
@@ -788,7 +797,9 @@ pub struct Entry<'a, R: 'a + Read> {
 
 impl<'a, R: 'a + Read> Entry<'a, R> {
     /// Returns the header for this archive entry.
-    pub fn header(&self) -> &Header { self.header }
+    pub fn header(&self) -> &Header {
+        self.header
+    }
 }
 
 impl<'a, R: 'a + Read> Read for Entry<'a, R> {
@@ -827,8 +838,7 @@ impl<'a, R: 'a + Read + Seek> Seek for Entry<'a, R> {
         if new_position > self.length {
             let msg = format!(
                 "Invalid seek to position past end of entry ({} vs. {})",
-                new_position,
-                self.length
+                new_position, self.length
             );
             return Err(Error::new(ErrorKind::InvalidInput, msg));
         }
@@ -898,18 +908,20 @@ impl<W: Write> Builder<W> {
     /// Create a new archive builder with the underlying writer object as the
     /// destination of all data written.
     pub fn new(writer: W) -> Builder<W> {
-        Builder {
-            writer,
-            started: false,
-        }
+        Builder { writer, started: false }
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
-    pub fn into_inner(self) -> Result<W> { Ok(self.writer) }
+    pub fn into_inner(self) -> Result<W> {
+        Ok(self.writer)
+    }
 
     /// Adds a new entry to this archive.
-    pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-        -> Result<()> {
+    pub fn append<R: Read>(
+        &mut self,
+        header: &Header,
+        mut data: R,
+    ) -> Result<()> {
         if !self.started {
             self.writer.write_all(GLOBAL_HEADER)?;
             self.started = true;
@@ -1005,11 +1017,16 @@ impl<W: Write> GnuBuilder<W> {
     }
 
     /// Unwrap this archive builder, returning the underlying writer object.
-    pub fn into_inner(self) -> Result<W> { Ok(self.writer) }
+    pub fn into_inner(self) -> Result<W> {
+        Ok(self.writer)
+    }
 
     /// Adds a new entry to this archive.
-    pub fn append<R: Read>(&mut self, header: &Header, mut data: R)
-        -> Result<()> {
+    pub fn append<R: Read>(
+        &mut self,
+        header: &Header,
+        mut data: R,
+    ) -> Result<()> {
         let is_long_name = header.identifier().len() > 15;
         let has_name = if is_long_name {
             self.long_names.contains_key(header.identifier())
@@ -1031,10 +1048,10 @@ impl<W: Write> GnuBuilder<W> {
                 write!(
                     self.writer,
                     "{:<48}{:<10}`\n",
-                    GNU_NAME_TABLE_ID,
-                    self.name_table_size
+                    GNU_NAME_TABLE_ID, self.name_table_size
                 )?;
-                let mut entries: Vec<(usize, &[u8])> = self.long_names
+                let mut entries: Vec<(usize, &[u8])> = self
+                    .long_names
                     .iter()
                     .map(|(id, &start)| (start, id.as_slice()))
                     .collect();
@@ -1272,8 +1289,10 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Identifier \\\"bar\\\" was not in the list of \
-                               identifiers passed to GnuBuilder::new()")]
+    #[should_panic(
+        expected = "Identifier \\\"bar\\\" was not in the list of \
+                               identifiers passed to GnuBuilder::new()"
+    )]
     fn build_gnu_archive_with_unexpected_identifier() {
         let names = vec![b"foo".to_vec()];
         let mut builder = GnuBuilder::new(Vec::new(), names);
@@ -1291,10 +1310,8 @@ mod tests {
         This file is awesome!\n\
         baz.txt         1487552349  42    12345 100664  4         `\n\
         baz\n";
-        let reader = SlowReader {
-            current_position: 0,
-            buffer: input.as_bytes(),
-        };
+        let reader =
+            SlowReader { current_position: 0, buffer: input.as_bytes() };
         let mut archive = Archive::new(reader);
         {
             // Parse the first entry and check the header values.
@@ -1998,11 +2015,17 @@ mod tests {
         let mut buffer = std::io::Cursor::new(Vec::new());
 
         {
-            let filenames = vec![b"rust.metadata.bin".to_vec(), b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o".to_vec()];
+            let filenames = vec![
+                b"rust.metadata.bin".to_vec(),
+                b"compiler_builtins-78891cf83a7d3547.dummy_name.rcgu.o"
+                    .to_vec(),
+            ];
             let mut builder = GnuBuilder::new(&mut buffer, filenames.clone());
 
             for filename in filenames {
-                builder.append(&Header::new(filename, 1), &mut (&[b'?'] as &[u8])).expect("add file");
+                builder
+                    .append(&Header::new(filename, 1), &mut (&[b'?'] as &[u8]))
+                    .expect("add file");
             }
         }
 
