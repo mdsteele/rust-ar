@@ -266,6 +266,10 @@ impl Header {
             }
             let start = parse_number("GNU filename index", &buffer[1..16], 10)?
                 as usize;
+            if start > name_table.len() {
+                let msg = "GNU filename index out of range";
+                return Err(Error::new(ErrorKind::InvalidData, msg));
+            }
             let end = match name_table[start..]
                 .iter()
                 .position(|&ch| ch == b'/' || ch == b'\x00')
@@ -2035,6 +2039,26 @@ mod tests {
         while let Some(entry) = archive.next_entry() {
             entry.unwrap();
         }
+    }
+
+    /// Regression test for https://github.com/mdsteele/rust-ar/issues/22
+    #[test]
+    #[should_panic(expected = "GNU filename index out of range")]
+    fn issue_22() {
+        let data = &[
+            33, 60, 97, 114, 99, 104, 62, 10, 99, 104, 60, 159, 149, 33, 62,
+            10, 219, 87, 219, 219, 219, 96, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 47, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 49, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 39, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 51, 49, 50, 56, 48, 48, 54, 54, 54, 51, 52, 56,
+            48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+            48, 48, 48, 48, 48, 48, 48, 48, 47, 48, 0, 40,
+        ];
+        let mut archive = Archive::new(std::io::Cursor::new(data));
+        let _num_entries = archive.count_entries().unwrap();
     }
 }
 
