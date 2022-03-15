@@ -1,7 +1,8 @@
 # rust-ar
 
-[![Build Status](https://travis-ci.com/mdsteele/rust-ar.svg?branch=master)](https://travis-ci.com/mdsteele/rust-ar)
-[![Build status](https://ci.appveyor.com/api/projects/status/shfakk09kn1skuqa?svg=true)](https://ci.appveyor.com/project/mdsteele/rust-ar)
+[![Build Status](https://github.com/mdsteele/rust-ar/actions/workflows/tests.yml/badge.svg)](https://github.com/mdsteele/rust-ar/actions/workflows/tests.yml)
+[![Crates.io](https://img.shields.io/crates/v/ar.svg)](https://crates.io/crates/ar)
+[![Documentation](https://docs.rs/ar/badge.svg)](https://docs.rs/ar)
 
 A rust library for encoding/decoding Unix archive (.a) files.
 
