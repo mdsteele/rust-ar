@@ -98,7 +98,7 @@ fn read_be_u32(r: &mut impl io::Read) -> io::Result<u32> {
 // ========================================================================= //
 
 const GLOBAL_HEADER_LEN: usize = 8;
-const GLOBAL_HEADER: &'static [u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
+const GLOBAL_HEADER: &[u8; GLOBAL_HEADER_LEN] = b"!<arch>\n";
 
 const ENTRY_HEADER_LEN: usize = 60;
 
@@ -345,9 +345,9 @@ impl Header {
         if self.identifier.len() > 16 || self.identifier.contains(&b' ') {
             let padding_length = (4 - self.identifier.len() % 4) % 4;
             let padded_length = self.identifier.len() + padding_length;
-            write!(
+            writeln!(
                 writer,
-                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`",
                 padded_length,
                 self.mtime,
                 self.uid,
@@ -360,9 +360,9 @@ impl Header {
         } else {
             writer.write_all(&self.identifier)?;
             writer.write_all(&vec![b' '; 16 - self.identifier.len()])?;
-            write!(
+            writeln!(
                 writer,
-                "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+                "{:<12}{:<6}{:<6}{:<8o}{:<10}`",
                 self.mtime, self.uid, self.gid, self.mode, self.size
             )?;
         }
@@ -385,9 +385,9 @@ impl Header {
             writer.write_all(b"/")?;
             writer.write_all(&vec![b' '; 15 - self.identifier.len()])?;
         }
-        write!(
+        writeln!(
             writer,
-            "{:<12}{:<6}{:<6}{:<8o}{:<10}`\n",
+            "{:<12}{:<6}{:<6}{:<8o}{:<10}`",
             self.mtime, self.uid, self.gid, self.mode, self.size
         )?;
         Ok(())
@@ -419,7 +419,7 @@ fn parse_number_permitting_empty(
 ) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         let trimmed = string.trim_end();
-        if trimmed.len() == 0 {
+        if trimmed.is_empty() {
             return Ok(0);
         } else if let Ok(value) = u64::from_str_radix(trimmed, radix) {
             return Ok(value);
@@ -767,7 +767,7 @@ impl<R: Read + Seek> Archive<R> {
             }
         }
         // Resume our previous position in the file.
-        if self.entry_headers.len() > 0 {
+        if !self.entry_headers.is_empty() {
             let offset =
                 self.entry_headers[self.next_entry_index].header_start;
             self.reader.seek(SeekFrom::Start(offset))?;
@@ -942,7 +942,7 @@ impl<W: Write> Builder<W> {
             return Err(Error::new(ErrorKind::InvalidData, msg));
         }
         if actual_size % 2 != 0 {
-            self.writer.write_all(&['\n' as u8])?;
+            self.writer.write_all(&[b'\n'])?;
         }
         Ok(())
     }
@@ -1049,9 +1049,9 @@ impl<W: Write> GnuBuilder<W> {
         if !self.started {
             self.writer.write_all(GLOBAL_HEADER)?;
             if !self.long_names.is_empty() {
-                write!(
+                writeln!(
                     self.writer,
-                    "{:<48}{:<10}`\n",
+                    "{:<48}{:<10}`",
                     GNU_NAME_TABLE_ID, self.name_table_size
                 )?;
                 let mut entries: Vec<(usize, &[u8])> = self
@@ -1083,7 +1083,7 @@ impl<W: Write> GnuBuilder<W> {
             return Err(Error::new(ErrorKind::InvalidData, msg));
         }
         if actual_size % 2 != 0 {
-            self.writer.write_all(&['\n' as u8])?;
+            self.writer.write_all(&[b'\n'])?;
         }
 
         Ok(())
