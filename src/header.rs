@@ -173,7 +173,11 @@ impl Header {
             *variant = Variant::GNU;
             identifier.pop();
         }
-        let mtime = parse_number_permitting_minus_one("timestamp", &buffer[16..28], 10)?;
+        let mtime = parse_number_permitting_minus_one(
+            "timestamp",
+            &buffer[16..28],
+            10,
+        )?;
         let uid = if *variant == Variant::GNU {
             parse_number_permitting_empty("owner ID", &buffer[28..34], 10)?
         } else {
