@@ -724,6 +724,16 @@ mod tests {
     }
 
     #[test]
+    fn read_archive_with_mtime_minus_one() {
+        let input = "\
+        !<arch>\n\
+        foo.txt         -1          501   20    100644  7         `\n\
+        foobar\n\n";
+        let mut archive = Archive::new(input.as_bytes());
+        archive.next_entry().unwrap().unwrap();
+    }
+
+    #[test]
     #[should_panic(expected = "Invalid owner ID field in entry header \
                                (\\\"foo   \\\")")]
     fn read_archive_with_invalid_uid() {

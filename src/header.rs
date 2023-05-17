@@ -173,7 +173,11 @@ impl Header {
             *variant = Variant::GNU;
             identifier.pop();
         }
-        let mtime = parse_number("timestamp", &buffer[16..28], 10)?;
+        let mtime = parse_number_permitting_minus_one(
+            "timestamp",
+            &buffer[16..28],
+            10,
+        )?;
         let uid = if *variant == Variant::GNU {
             parse_number_permitting_empty("owner ID", &buffer[28..34], 10)?
         } else {
@@ -288,6 +292,31 @@ impl Header {
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
         if let Ok(value) = u64::from_str_radix(string.trim_end(), radix) {
+            return Ok(value);
+        }
+    }
+    let msg = format!(
+        "Invalid {} field in entry header ({:?})",
+        field_name,
+        String::from_utf8_lossy(bytes)
+    );
+    Err(Error::new(ErrorKind::InvalidData, msg))
+}
+
+/*
+ * Equivalent to parse_number() except for the case of "-1"
+ * as MS tools may emit for mtime.
+ */
+fn parse_number_permitting_minus_one(
+    field_name: &str,
+    bytes: &[u8],
+    radix: u32,
+) -> Result<u64> {
+    if let Ok(string) = str::from_utf8(bytes) {
+        let trimmed = string.trim_end();
+        if trimmed == "-1" {
+            return Ok(0);
+        } else if let Ok(value) = u64::from_str_radix(trimmed, radix) {
             return Ok(value);
         }
     }
