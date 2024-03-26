@@ -1,0 +1,27 @@
+[package]
+name = "ar-fuzz"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ar = { path = ".." }
+arbitrary = { version = "1.3.2", features = ["derive"] }
+
+[workspace]
+members = ["."] # Let fuzz suite not interfere with workspaces
+
+[[bin]]
+name = "roundtrip"
+path = "fuzz_targets/roundtrip.rs"
+
+[[bin]]
+name = "roundtrip_gnu"
+path = "fuzz_targets/roundtrip_gnu.rs"
+
+[[bin]]
+name = "read"
+path = "fuzz_targets/read.rs"

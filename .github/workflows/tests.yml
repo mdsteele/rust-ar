@@ -45,4 +45,5 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - name: Test
         run: cargo test --verbose
-
+      - name: Compile fuzz suite
+        run: cargo check --manifest-path fuzz/Cargo.toml
