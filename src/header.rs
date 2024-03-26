@@ -245,8 +245,8 @@ impl Header {
                 "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`",
                 padded_length,
                 self.mtime,
-                self.uid,
-                self.gid,
+                format!("{:.*}",6,self.uid.to_string()),
+                format!("{:.*}",6,self.gid.to_string()),
                 self.mode,
                 self.size + padded_length as u64
             )?;
@@ -258,7 +258,11 @@ impl Header {
             writeln!(
                 writer,
                 "{:<12}{:<6}{:<6}{:<8o}{:<10}`",
-                self.mtime, self.uid, self.gid, self.mode, self.size
+                self.mtime,
+                format!("{:.*}",6,self.uid.to_string()),
+                format!("{:.*}",6,self.gid.to_string()),
+                self.mode,
+                self.size
             )?;
         }
         Ok(())
@@ -283,7 +287,11 @@ impl Header {
         writeln!(
             writer,
             "{:<12}{:<6}{:<6}{:<8o}{:<10}`",
-            self.mtime, self.uid, self.gid, self.mode, self.size
+            self.mtime,
+            format!("{:.*}",6,self.uid.to_string()),
+            format!("{:.*}",6,self.gid.to_string()),
+            self.mode,
+            self.size
         )?;
         Ok(())
     }
