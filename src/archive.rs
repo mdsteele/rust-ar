@@ -284,11 +284,7 @@ impl<R: Read + Seek> Archive<R> {
         self.reader.seek(SeekFrom::Start(offset))?;
         let header = &self.entry_headers[index].header;
         let size = header.size();
-        if size % 2 != 0 {
-            self.padding = true;
-        } else {
-            self.padding = false;
-        }
+        self.padding = size % 2 != 0;
         self.next_entry_index = index + 1;
         Ok(Entry {
             header,
