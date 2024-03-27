@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::io::{self, Error, ErrorKind, Read, Result, Write};
@@ -244,10 +245,10 @@ impl Header {
                 writer,
                 "#1/{:<13}{:<12}{:<6.6}{:<6.6}{:<8o}{:<10}`",
                 padded_length,
-                self.mtime,
+                cap_mtime(self.mtime),
                 self.uid.to_string(),
                 self.gid.to_string(),
-                self.mode,
+                cap_mode(self.mode),
                 self.size + padded_length as u64
             )?;
             writer.write_all(&self.identifier)?;
@@ -258,10 +259,10 @@ impl Header {
             writeln!(
                 writer,
                 "{:<12}{:<6.6}{:<6.6}{:<8o}{:<10}`",
-                self.mtime,
+                cap_mtime(self.mtime),
                 self.uid.to_string(),
                 self.gid.to_string(),
-                self.mode,
+                cap_mode(self.mode),
                 self.size
             )?;
         }
@@ -287,14 +288,22 @@ impl Header {
         writeln!(
             writer,
             "{:<12}{:<6.6}{:<6.6}{:<8o}{:<10}`",
-            self.mtime,
+            cap_mtime(self.mtime),
             self.uid.to_string(),
             self.gid.to_string(),
-            self.mode,
+            cap_mode(self.mode),
             self.size
         )?;
         Ok(())
     }
+}
+
+fn cap_mtime(mtime: u64) -> u64 {
+    min(mtime, 999_999_999_999) // Closest representable timestamp
+}
+
+fn cap_mode(mode: u32) -> u32 {
+    mode & 0o7777_7777 // Preserve as many bits as possible
 }
 
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {

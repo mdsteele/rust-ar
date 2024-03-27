@@ -1,4 +1,5 @@
 use arbitrary::{Arbitrary, Unstructured};
+use std::cmp::min;
 
 #[derive(Clone, Default, Debug, Eq, PartialEq, Arbitrary)]
 pub struct Model {
@@ -76,21 +77,21 @@ impl Arbitrary<'_> for Identifier {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Arbitrary)]
 struct Mode(u32);
 
-impl Arbitrary<'_> for Mode {
-    fn arbitrary(u: &mut Unstructured<'_>) -> arbitrary::Result<Self> {
-        u32::arbitrary(u).map(|v| Mode(v & 0o7777))
+impl PartialEq for Mode {
+    fn eq(&self, other: &Mode) -> bool {
+        self.0 & 0o7777_7777 == other.0 & 0o7777_7777
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Arbitrary)]
 struct Timestamp(u64);
 
-impl Arbitrary<'_> for Timestamp {
-    fn arbitrary(u: &mut Unstructured<'_>) -> arbitrary::Result<Self> {
-        u.int_in_range(0..=999_999_999_999).map(Timestamp) // TODO: Deal with entire range
+impl PartialEq for Timestamp {
+    fn eq(&self, other: &Timestamp) -> bool {
+        min(self.0, 999_999_999_999) == min(other.0, 999_999_999_999)
     }
 }
 
@@ -99,11 +100,10 @@ struct Uid(u32);
 
 impl PartialEq for Uid {
     fn eq(&self, other: &Uid) -> bool {
-        truncated_ascii(self.0.to_string(), 6) == truncated_ascii(other.0.to_string(), 6)
+        let mut left = self.0.to_string();
+        left.truncate(6);
+        let mut right = other.0.to_string();
+        right.truncate(6);
+        left == right
     }
-}
-
-fn truncated_ascii(mut ascii: String, width: usize) -> String {
-    ascii.truncate(width);
-    ascii
 }
