@@ -94,11 +94,16 @@ impl Arbitrary<'_> for Timestamp {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Arbitrary)]
 struct Uid(u32);
 
-impl Arbitrary<'_> for Uid {
-    fn arbitrary(u: &mut Unstructured<'_>) -> arbitrary::Result<Self> {
-        u.int_in_range(0..=999_999).map(Uid) // TODO: Deal with entire range (#29)
+impl PartialEq for Uid {
+    fn eq(&self, other: &Uid) -> bool {
+        truncated_ascii(self.0.to_string(), 6) == truncated_ascii(other.0.to_string(), 6)
     }
+}
+
+fn truncated_ascii(mut ascii: String, width: usize) -> String {
+    ascii.truncate(width);
+    ascii
 }
