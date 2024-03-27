@@ -242,11 +242,11 @@ impl Header {
             let padded_length = self.identifier.len() + padding_length;
             writeln!(
                 writer,
-                "#1/{:<13}{:<12}{:<6}{:<6}{:<8o}{:<10}`",
+                "#1/{:<13}{:<12}{:<6.6}{:<6.6}{:<8o}{:<10}`",
                 padded_length,
                 self.mtime,
-                self.uid,
-                self.gid,
+                self.uid.to_string(),
+                self.gid.to_string(),
                 self.mode,
                 self.size + padded_length as u64
             )?;
@@ -257,8 +257,12 @@ impl Header {
             writer.write_all(&vec![b' '; 16 - self.identifier.len()])?;
             writeln!(
                 writer,
-                "{:<12}{:<6}{:<6}{:<8o}{:<10}`",
-                self.mtime, self.uid, self.gid, self.mode, self.size
+                "{:<12}{:<6.6}{:<6.6}{:<8o}{:<10}`",
+                self.mtime,
+                self.uid.to_string(),
+                self.gid.to_string(),
+                self.mode,
+                self.size
             )?;
         }
         Ok(())
@@ -282,8 +286,12 @@ impl Header {
         }
         writeln!(
             writer,
-            "{:<12}{:<6}{:<6}{:<8o}{:<10}`",
-            self.mtime, self.uid, self.gid, self.mode, self.size
+            "{:<12}{:<6.6}{:<6.6}{:<8o}{:<10}`",
+            self.mtime,
+            self.uid.to_string(),
+            self.gid.to_string(),
+            self.mode,
+            self.size
         )?;
         Ok(())
     }

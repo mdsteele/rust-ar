@@ -282,6 +282,27 @@ mod tests {
     }
 
     #[test]
+    fn build_common_archive_with_uid_gid_overflow() {
+        let mut builder = Builder::new(Vec::new());
+        let mut header1 = Header::new(b"foo.txt".to_vec(), 7);
+        header1.set_mtime(1487552916);
+        header1.set_uid(1234567);
+        header1.set_gid(7654321);
+        header1.set_mode(0o100644);
+        builder.append(&header1, "foobar\n".as_bytes()).unwrap();
+        let header2 = Header::new(b"baz.txt".to_vec(), 4);
+        builder.append(&header2, "baz\n".as_bytes()).unwrap();
+        let actual = builder.into_inner().unwrap();
+        let expected = "\
+        !<arch>\n\
+        foo.txt         1487552916  123456765432100644  7         `\n\
+        foobar\n\n\
+        baz.txt         0           0     0     0       4         `\n\
+        baz\n";
+        assert_eq!(str::from_utf8(&actual).unwrap(), expected);
+    }
+
+    #[test]
     fn build_bsd_archive_with_long_filenames() {
         let mut builder = Builder::new(Vec::new());
         let mut header1 = Header::new(b"short".to_vec(), 1);
