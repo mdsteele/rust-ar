@@ -1169,4 +1169,21 @@ mod tests {
         let mut archive = Archive::new(std::io::Cursor::new(data));
         let _num_entries = archive.count_entries().unwrap();
     }
+
+    /// Test for entries with octal literal (0o) prefix in the mode field.
+    #[test]
+    fn read_archive_with_radix_prefixed_mode() {
+        let input = "\
+        !<arch>\n\
+        foo.txt/        1487552916  501   20    0o1006447         `\n\
+        foobar\n";
+        let mut archive = Archive::new(input.as_bytes());
+        {
+            let entry = archive.next_entry().unwrap().unwrap();
+            assert_eq!(entry.header().identifier(), "foo.txt".as_bytes());
+            assert_eq!(entry.header().mode(), 0o100644);
+            assert_eq!(entry.header().size(), 7);
+        }
+        assert!(archive.next_entry().is_none());
+    }
 }

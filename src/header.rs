@@ -308,6 +308,12 @@ fn cap_mode(mode: u32) -> u32 {
 
 fn parse_number(field_name: &str, bytes: &[u8], radix: u32) -> Result<u64> {
     if let Ok(string) = str::from_utf8(bytes) {
+        let string = match radix {
+            2 => string.trim_start_matches("0b"),
+            8 => string.trim_start_matches("0o"),
+            16 => string.trim_start_matches("0x"),
+            _ => string,
+        };
         if let Ok(value) = u64::from_str_radix(string.trim_end(), radix) {
             return Ok(value);
         }
